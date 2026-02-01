@@ -48,11 +48,6 @@
  * Current values for WhatsApp 2.26.4.71:
  *   MD5_CLASSES: PNuIlAsWtqBNw7eLEYwWUA==
  *   KEY: dCLnrTWF4vk36Bx1325H8RpxHSnFiW+3Yg6qGL4b/FY+S8bSeSCa28D+...
- *
- * KNOWN ISSUE: The registration API requires an "e2e_identity" parameter
- * that appears to be a protobuf-encoded SignedDeviceIdentity structure.
- * The exact format is not yet determined. Current implementation sends
- * the identity key but server returns "bad_value" error.
  */
 
 /* WhatsApp APK signing certificate (Brian Acton, WhatsApp Inc.) */
@@ -299,6 +294,90 @@ static void hmac_sha1(const uint8_t *key, size_t key_len,
     memcpy(outer + 64, inner_hash, 20);
 
     sha1(outer, sizeof(outer), hash);
+}
+
+/*
+ * XEdDSA: Sign a message using a Curve25519 private key
+ * Creates an Ed25519-compatible signature from a Curve25519 key pair.
+ *
+ * Per the XEdDSA specification:
+ * 1. Compute Ed25519 public key A from Curve25519 private key a
+ * 2. If sign bit of A is 1, negate a and clear sign bit
+ * 3. Generate nonce: r = H(Z || a || msg) where Z is 64 random bytes
+ * 4. Compute R = r * B (Ed25519 base point)
+ * 5. Compute h = H(R || A || msg)
+ * 6. Compute s = r + h * a mod L
+ * 7. Signature = R || s
+ */
+static int xeddsa_sign(uint8_t signature[64],
+                       const uint8_t curve25519_privkey[32],
+                       const uint8_t *msg, size_t msg_len,
+                       const uint8_t random64[64])
+{
+    uint8_t a[32], aneg[32];
+    uint8_t A[32];
+    uint8_t sign_bit;
+    crypto_hash_sha512_state hash_state;
+    uint8_t nonce_hash[64], h_hash[64];
+    uint8_t nonce[32], h[32], ha[32], s[32];
+    uint8_t R[32];
+
+    /* Step 1: Convert Curve25519 privkey to Ed25519 public key
+     * A = a * B_ed25519 (using noclamp since privkey is already clamped) */
+    if (crypto_scalarmult_ed25519_base_noclamp(A, curve25519_privkey) != 0) {
+        return -1;
+    }
+
+    /* Step 2: Force Edwards sign bit to zero by conditionally negating scalar */
+    sign_bit = (A[31] >> 7) & 1;
+    memcpy(a, curve25519_privkey, 32);
+    crypto_core_ed25519_scalar_negate(aneg, a);
+
+    /* Conditional move: use negated key if sign bit was set */
+    for (int i = 0; i < 32; i++) {
+        a[i] = sign_bit ? aneg[i] : a[i];
+    }
+    A[31] &= 0x7F;  /* Clear sign bit */
+
+    /* Step 3: Generate nonce r = H(Z || a || msg) reduced mod L */
+    crypto_hash_sha512_init(&hash_state);
+    crypto_hash_sha512_update(&hash_state, random64, 64);
+    crypto_hash_sha512_update(&hash_state, a, 32);
+    crypto_hash_sha512_update(&hash_state, msg, msg_len);
+    crypto_hash_sha512_final(&hash_state, nonce_hash);
+    crypto_core_ed25519_scalar_reduce(nonce, nonce_hash);
+
+    /* Step 4: R = nonce * B */
+    if (crypto_scalarmult_ed25519_base_noclamp(R, nonce) != 0) {
+        sodium_memzero(a, 32);
+        sodium_memzero(aneg, 32);
+        sodium_memzero(nonce, 32);
+        return -1;
+    }
+
+    /* Step 5: h = H(R || A || msg) reduced mod L */
+    crypto_hash_sha512_init(&hash_state);
+    crypto_hash_sha512_update(&hash_state, R, 32);
+    crypto_hash_sha512_update(&hash_state, A, 32);
+    crypto_hash_sha512_update(&hash_state, msg, msg_len);
+    crypto_hash_sha512_final(&hash_state, h_hash);
+    crypto_core_ed25519_scalar_reduce(h, h_hash);
+
+    /* Step 6: s = nonce + h * a mod L */
+    crypto_core_ed25519_scalar_mul(ha, h, a);
+    crypto_core_ed25519_scalar_add(s, nonce, ha);
+
+    /* Step 7: signature = R || s */
+    memcpy(signature, R, 32);
+    memcpy(signature + 32, s, 32);
+
+    /* Cleanup sensitive data */
+    sodium_memzero(a, 32);
+    sodium_memzero(aneg, 32);
+    sodium_memzero(nonce, 32);
+    sodium_memzero(nonce_hash, 64);
+
+    return 0;
 }
 
 /*
@@ -593,9 +672,19 @@ static char *build_registration_params(const char *cc, const char *phone,
 
     /* Generate temporary Signal keys for registration */
 
-    /* Generate identity key pair as Ed25519 */
-    uint8_t identity_pub[32], identity_priv[64];
-    crypto_sign_keypair(identity_pub, identity_priv);
+    /* Signal Protocol identity key:
+     * - Transmitted as Curve25519 public key with 0x05 prefix
+     * - Signatures made using XEdDSA (Ed25519-compatible signature with Curve25519 key)
+     *
+     * We generate Curve25519 keys directly. The XEdDSA signing function handles
+     * the conversion and sign bit normalization internally.
+     */
+    uint8_t identity_priv[32], identity_pub[32];
+    crypto_random(identity_priv, 32);
+    identity_priv[0] &= 248;
+    identity_priv[31] &= 127;
+    identity_priv[31] |= 64;
+    crypto_scalarmult_base(identity_pub, identity_priv);
 
     /* Generate signed prekey as Curve25519 */
     uint8_t signed_prekey_priv[32], signed_prekey_pub[32];
@@ -616,21 +705,32 @@ static char *build_registration_params(const char *cc, const char *phone,
     char e_regid[16];
     base64url_encode(reg_id_bytes, 4, e_regid, sizeof(e_regid));
 
-    /* Build prefixed keys for transmission */
+    /* Build prefixed keys for transmission
+     * Signal protocol uses 0x05 prefix for DJB (Curve25519) keys */
     uint8_t ident_with_prefix[33], skey_with_prefix[33];
     ident_with_prefix[0] = 0x05;
     memcpy(ident_with_prefix + 1, identity_pub, 32);
     skey_with_prefix[0] = 0x05;
     memcpy(skey_with_prefix + 1, signed_prekey_pub, 32);
 
-    /* Sign the prefixed prekey */
+    /* Sign the prefixed prekey (33 bytes) using XEdDSA
+     * Per X3DH spec, signature is over Encode(SPKB) which is 0x05 + key */
     uint8_t signed_prekey_sig[64];
-    unsigned long long sig_len;
-    crypto_sign_detached(signed_prekey_sig, &sig_len, skey_with_prefix, 33, identity_priv);
+    uint8_t xeddsa_random[64];
+    randombytes_buf(xeddsa_random, 64);
+    if (xeddsa_sign(signed_prekey_sig, identity_priv, skey_with_prefix, 33, xeddsa_random) != 0) {
+        sodium_memzero(identity_priv, sizeof(identity_priv));
+        sodium_memzero(xeddsa_random, sizeof(xeddsa_random));
+        return NULL;
+    }
+    sodium_memzero(xeddsa_random, sizeof(xeddsa_random));
     sodium_memzero(identity_priv, sizeof(identity_priv));
 
-    /* Signed prekey ID */
-    const char *e_skey_id = "AQ%3D%3D";
+    /* Signed prekey ID - 3 bytes big-endian, base64 encoded
+     * WhatsApp uses 3-byte big-endian format for signedPreKeyId (from 1RB.A04())
+     * For value 1: {0x00, 0x00, 0x01} -> Base64 "AAAB"
+     */
+    const char *e_skey_id = "AAAB";
 
     /* Generate Noise protocol authentication key */
     uint8_t auth_priv[32], auth_pub[32];
@@ -644,14 +744,9 @@ static char *build_registration_params(const char *cc, const char *phone,
     sodium_memzero(auth_priv, sizeof(auth_priv));
 
     char e_ident[256], e_skey_val[256], e_skey_sig_b64[512];
-    base64url_encode(ident_with_prefix, 33, e_ident, sizeof(e_ident));
-    base64url_encode(skey_with_prefix, 33, e_skey_val, sizeof(e_skey_val));
+    base64url_encode(identity_pub, 32, e_ident, sizeof(e_ident));  /* Raw 32-byte key */
+    base64url_encode(signed_prekey_pub, 32, e_skey_val, sizeof(e_skey_val));  /* Raw 32-byte key (no prefix) */
     base64url_encode(signed_prekey_sig, 64, e_skey_sig_b64, sizeof(e_skey_sig_b64));
-
-    /* e2e_identity: try raw base64 (not URL-encoded) with sodium's encoder */
-    char e2e_identity[256];
-    sodium_bin2base64(e2e_identity, sizeof(e2e_identity), ident_with_prefix, 33,
-                      sodium_base64_VARIANT_ORIGINAL);
 
     /* Generate authentication token */
     char full_phone[32];
@@ -699,7 +794,6 @@ static char *build_registration_params(const char *cc, const char *phone,
              "&e_skey_val=%s"
              "&e_skey_sig=%s"
              "&authkey=%s"
-             "&e2e_identity=%s"
              "&fdid=%s"
              "&expid=%s"
              "&backup_token=%s",
@@ -713,7 +807,6 @@ static char *build_registration_params(const char *cc, const char *phone,
              e_skey_val,
              e_skey_sig_b64,
              authkey,
-             e2e_identity,
              fdid,
              expid,
              backup_token);
