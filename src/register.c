@@ -452,6 +452,7 @@ static char *build_registration_params(const char *cc, const char *phone,
              "&lg=%s"
              "&lc=%s"
              "&method=%s"
+             "&platform=android"
              "&mcc=000"
              "&mnc=000"
              "&sim_mcc=000"
