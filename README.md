@@ -78,40 +78,54 @@ All registration constants (SIGNATURE, MD5_CLASSES, KEY) are in place.
 
 ### Updating to a New Version
 
-When WhatsApp releases a new version, both MD5_CLASSES and KEY must be updated:
+When WhatsApp releases a new version, both MD5_CLASSES and KEY must be updated.
+Use the included extraction tool:
 
 ```sh
-# 1. Download the new APK
-# 2. Extract and calculate MD5_CLASSES
-unzip -p WhatsApp.apk classes.dex | md5sum | cut -d' ' -f1 | xxd -r -p | base64
+# Extract key and MD5_CLASSES from new APK
+./tools/extract_key.py /path/to/WhatsApp.apk
 
-# 3. Extract KEY from the native library (see below)
-# 4. Update src/register.c with:
-#    - WA_VERSION
-#    - WA_MD5_CLASSES
-#    - WA_KEY
-# 5. Rebuild
+# Output (copy to src/register.c):
+#define WA_MD5_CLASSES "PNuIlAsWtqBNw7eLEYwWUA=="
+#define WA_KEY "dCLnrTWF4vk36Bx1325H8RpxHSnFiW+3Yg6qGL4b/FY+..."
+
+# Also update WA_VERSION in src/register.c, then rebuild
 make clean && make
 ```
 
-### Extracting the HMAC Key for New Versions
+### Key Extraction Tool
 
-The KEY is stored in `libwhatsappmerged.so` inside a SuperPack compressed
-archive (`libs.so`). To extract it:
+The `tools/extract_key.py` script automates HMAC key extraction from WhatsApp APKs:
 
-**Option 1: Static Analysis (Ghidra)**
-1. Extract APK: `unzip WhatsApp.apk -d apk_extracted/`
-2. Extract SuperPack archive from `lib/x86_64/libs.so`
-   - Find offsets: `nm libs.so | grep superpack`
-   - Extract: `dd if=libs.so of=archive.bin bs=1 skip=<offset> count=<size>`
-3. Decompress XZ streams in the archive
-4. Search for 80-byte high-entropy sequence near "hmac sha-1" string
-5. The key has maximum entropy (all 80 bytes unique)
+```sh
+# Basic usage
+./tools/extract_key.py WhatsApp.apk
 
-**Option 2: Frida (requires rooted device/emulator)**
-1. Install the specific WhatsApp version on a rooted Android device
-2. Use Frida to hook `mbedtls_md_hmac_starts` with key length 80
-3. Capture the KEY value during registration
+# Show all candidate keys (if automatic selection fails)
+./tools/extract_key.py WhatsApp.apk --all
+
+# Extract key at specific offset (for manual verification)
+./tools/extract_key.py WhatsApp.apk --offset 0x4bc4e0
+
+# Verbose output with hex dump
+./tools/extract_key.py WhatsApp.apk -v
+```
+
+The tool:
+1. Calculates MD5_CLASSES from classes.dex
+2. Parses libs.so ELF to find SuperPack archive
+3. Decompresses XZ streams
+4. Searches for 80-byte high-entropy sequences near "hmac sha-1" string
+
+If registration fails with "bad_token", try other candidates using `--all`.
+
+### Alternative: Frida Runtime Extraction
+
+If static analysis fails, use Frida on a rooted Android device:
+
+1. Install WhatsApp on rooted device/emulator
+2. Hook `mbedtls_md_hmac_starts` with key length 80
+3. Trigger registration to capture the key
 
 ### Alternative: Import Existing Account
 
