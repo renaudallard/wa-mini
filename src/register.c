@@ -141,6 +141,162 @@ static int base64_decode(const char *input, uint8_t *output, size_t output_size)
 }
 
 /*
+ * SHA-1 implementation for HMAC-SHA1 token generation
+ * WhatsApp requires actual SHA-1, not BLAKE2b or other alternatives
+ */
+#define SHA1_ROTL(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
+
+static void sha1_transform(uint32_t state[5], const uint8_t block[64])
+{
+    uint32_t w[80];
+    uint32_t a, b, c, d, e;
+
+    /* Expand 16 32-bit words into 80 words */
+    for (int i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)block[i * 4] << 24) |
+               ((uint32_t)block[i * 4 + 1] << 16) |
+               ((uint32_t)block[i * 4 + 2] << 8) |
+               ((uint32_t)block[i * 4 + 3]);
+    }
+    for (int i = 16; i < 80; i++) {
+        w[i] = SHA1_ROTL(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
+    }
+
+    a = state[0];
+    b = state[1];
+    c = state[2];
+    d = state[3];
+    e = state[4];
+
+    /* 80 rounds */
+    for (int i = 0; i < 80; i++) {
+        uint32_t f, k;
+        if (i < 20) {
+            f = (b & c) | ((~b) & d);
+            k = 0x5A827999;
+        } else if (i < 40) {
+            f = b ^ c ^ d;
+            k = 0x6ED9EBA1;
+        } else if (i < 60) {
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8F1BBCDC;
+        } else {
+            f = b ^ c ^ d;
+            k = 0xCA62C1D6;
+        }
+
+        uint32_t temp = SHA1_ROTL(a, 5) + f + e + k + w[i];
+        e = d;
+        d = c;
+        c = SHA1_ROTL(b, 30);
+        b = a;
+        a = temp;
+    }
+
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+}
+
+static void sha1(const uint8_t *data, size_t len, uint8_t hash[20])
+{
+    uint32_t state[5] = {
+        0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0
+    };
+
+    /* Process complete blocks */
+    size_t blocks = len / 64;
+    for (size_t i = 0; i < blocks; i++) {
+        sha1_transform(state, data + i * 64);
+    }
+
+    /* Final block with padding */
+    uint8_t final_block[128];  /* May need 2 blocks */
+    size_t remaining = len % 64;
+    memcpy(final_block, data + blocks * 64, remaining);
+
+    /* Append bit '1' */
+    final_block[remaining] = 0x80;
+    remaining++;
+
+    /* Pad with zeros */
+    if (remaining > 56) {
+        /* Need two blocks */
+        memset(final_block + remaining, 0, 64 - remaining);
+        sha1_transform(state, final_block);
+        memset(final_block, 0, 56);
+    } else {
+        memset(final_block + remaining, 0, 56 - remaining);
+    }
+
+    /* Append length in bits (big-endian 64-bit) */
+    uint64_t bit_len = (uint64_t)len * 8;
+    final_block[56] = (uint8_t)(bit_len >> 56);
+    final_block[57] = (uint8_t)(bit_len >> 48);
+    final_block[58] = (uint8_t)(bit_len >> 40);
+    final_block[59] = (uint8_t)(bit_len >> 32);
+    final_block[60] = (uint8_t)(bit_len >> 24);
+    final_block[61] = (uint8_t)(bit_len >> 16);
+    final_block[62] = (uint8_t)(bit_len >> 8);
+    final_block[63] = (uint8_t)(bit_len);
+
+    sha1_transform(state, final_block);
+
+    /* Output hash (big-endian) */
+    for (int i = 0; i < 5; i++) {
+        hash[i * 4] = (uint8_t)(state[i] >> 24);
+        hash[i * 4 + 1] = (uint8_t)(state[i] >> 16);
+        hash[i * 4 + 2] = (uint8_t)(state[i] >> 8);
+        hash[i * 4 + 3] = (uint8_t)(state[i]);
+    }
+}
+
+static void hmac_sha1(const uint8_t *key, size_t key_len,
+                      const uint8_t *data, size_t data_len,
+                      uint8_t hash[20])
+{
+    uint8_t k_ipad[64], k_opad[64];
+
+    /* If key > 64 bytes, hash it first */
+    uint8_t key_hash[20];
+    if (key_len > 64) {
+        sha1(key, key_len, key_hash);
+        key = key_hash;
+        key_len = 20;
+    }
+
+    /* XOR key with ipad/opad */
+    memset(k_ipad, 0x36, 64);
+    memset(k_opad, 0x5c, 64);
+    for (size_t i = 0; i < key_len; i++) {
+        k_ipad[i] ^= key[i];
+        k_opad[i] ^= key[i];
+    }
+
+    /* Inner hash: SHA1(k_ipad || data) */
+    uint8_t *inner = malloc(64 + data_len);
+    if (!inner) {
+        memset(hash, 0, 20);
+        return;
+    }
+    memcpy(inner, k_ipad, 64);
+    memcpy(inner + 64, data, data_len);
+
+    uint8_t inner_hash[20];
+    sha1(inner, 64 + data_len, inner_hash);
+    free(inner);
+
+    /* Outer hash: SHA1(k_opad || inner_hash) */
+    uint8_t outer[64 + 20];
+    memcpy(outer, k_opad, 64);
+    memcpy(outer + 64, inner_hash, 20);
+
+    sha1(outer, sizeof(outer), hash);
+}
+
+/*
  * Generate registration token using HMAC-SHA1
  * Token = Base64(HMAC-SHA1(KEY, SIGNATURE + MD5_CLASSES + phone))
  * Returns 1 if token could be generated, 0 if not configured
@@ -190,38 +346,10 @@ static int generate_token(const char *phone, char *token, size_t token_size)
     memcpy(data + sig_len, md5_classes, (size_t)md5_len);
     memcpy(data + sig_len + md5_len, phone, phone_len);
 
-    /* HMAC-SHA1: Manual implementation
-     * WhatsApp uses actual SHA-1, we approximate with BLAKE2b-160
-     * Note: Only first 64 bytes of the 80-byte key are used for HMAC
-     * (standard HMAC block size is 64 bytes) */
-    uint8_t opad[64], ipad[64];
-    for (int i = 0; i < 64; i++) {
-        opad[i] = key[i] ^ 0x5C;
-        ipad[i] = key[i] ^ 0x36;
-    }
-
-    /* Inner hash: SHA1(ipad || data) */
-    uint8_t *inner_input = malloc(64 + data_len);
-    if (inner_input == NULL) {
-        free(data);
-        token[0] = '\0';
-        return 0;
-    }
-    memcpy(inner_input, ipad, 64);
-    memcpy(inner_input + 64, data, data_len);
-
-    uint8_t inner_hash[20];
-    crypto_generichash(inner_hash, 20, inner_input, 64 + data_len, NULL, 0);
-    free(inner_input);
-    free(data);
-
-    /* Outer hash: SHA1(opad || inner_hash) */
-    uint8_t outer_input[64 + 20];
-    memcpy(outer_input, opad, 64);
-    memcpy(outer_input + 64, inner_hash, 20);
-
+    /* Compute HMAC-SHA1 */
     uint8_t final_hash[20];
-    crypto_generichash(final_hash, 20, outer_input, sizeof(outer_input), NULL, 0);
+    hmac_sha1(key, 80, data, data_len, final_hash);
+    free(data);
 
     /* Base64 encode the result */
     static const char b64_alphabet[] =
@@ -290,6 +418,12 @@ static int http_post(const char *url, const char *post_data,
 
     int status;
     waitpid(pid, &status, 0);
+
+    /* Check if we got any response - if so, consider it a success even if
+     * curl returned non-zero (API errors still return valid JSON) */
+    if (total > 0) {
+        return 0;
+    }
 
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
@@ -453,6 +587,7 @@ static char *build_registration_params(const char *cc, const char *phone,
              "&lc=%s"
              "&method=%s"
              "&platform=android"
+             "&app_type="
              "&mcc=000"
              "&mnc=000"
              "&sim_mcc=000"
