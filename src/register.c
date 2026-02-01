@@ -48,6 +48,11 @@
  * Current values for WhatsApp 2.26.4.71:
  *   MD5_CLASSES: PNuIlAsWtqBNw7eLEYwWUA==
  *   KEY: dCLnrTWF4vk36Bx1325H8RpxHSnFiW+3Yg6qGL4b/FY+S8bSeSCa28D+...
+ *
+ * KNOWN ISSUE: The registration API requires an "e2e_identity" parameter
+ * that appears to be a protobuf-encoded SignedDeviceIdentity structure.
+ * The exact format is not yet determined. Current implementation sends
+ * the identity key but server returns "bad_value" error.
  */
 
 /* WhatsApp APK signing certificate (Brian Acton, WhatsApp Inc.) */
@@ -86,7 +91,7 @@ static const char WA_SIGNATURE[] =
 #define WA_KEY "dCLnrTWF4vk36Bx1325H8RpxHSnFiW+3Yg6qGL4b/FY+S8bSeSCa28D+eM1a9B/dqDOIB8cxsRIQWSeA7F9gUX+pGbVKDS3lep+TyZzvoOA="
 
 #define WA_VERSION "2.26.4.71"
-#define WA_USER_AGENT "WhatsApp/2.26.4.71 A"
+#define WA_USER_AGENT "WhatsApp/2.26.4.71 Android/14 Device/Pixel_8_Pro"
 
 /* External crypto functions */
 extern void crypto_random(uint8_t *buf, size_t len);
@@ -487,32 +492,60 @@ static void generate_device_identity(uint8_t *identity, size_t *len)
 }
 
 /*
- * Base64 URL-safe encode (no padding)
+ * Standard Base64 encode with padding, URL-encoded for form data
+ * Encodes + as %2B for application/x-www-form-urlencoded
  */
 static void base64url_encode(const uint8_t *data, size_t len, char *out, size_t out_size)
 {
-    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char temp[512];
     size_t i = 0, j = 0;
 
-    while (i < len && j < out_size - 4) {
-        uint32_t n = (uint32_t)data[i++] << 16;
-        if (i < len) n |= (uint32_t)data[i++] << 8;
-        if (i < len) n |= (uint32_t)data[i++];
+    /* Process 3 bytes at a time */
+    while (i + 3 <= len && j < sizeof(temp) - 4) {
+        uint32_t n = ((uint32_t)data[i] << 16) |
+                     ((uint32_t)data[i+1] << 8) |
+                     ((uint32_t)data[i+2]);
+        temp[j++] = alphabet[(n >> 18) & 0x3F];
+        temp[j++] = alphabet[(n >> 12) & 0x3F];
+        temp[j++] = alphabet[(n >> 6) & 0x3F];
+        temp[j++] = alphabet[n & 0x3F];
+        i += 3;
+    }
 
-        out[j++] = alphabet[(n >> 18) & 0x3F];
-        out[j++] = alphabet[(n >> 12) & 0x3F];
-        if (i > len - 2 || (i == len && (len % 3) == 1)) {
-            /* Don't add padding */
+    /* Handle remaining bytes with padding */
+    if (i < len && j < sizeof(temp) - 4) {
+        uint32_t n = (uint32_t)data[i] << 16;
+        if (i + 1 < len) n |= (uint32_t)data[i+1] << 8;
+
+        temp[j++] = alphabet[(n >> 18) & 0x3F];
+        temp[j++] = alphabet[(n >> 12) & 0x3F];
+
+        if (i + 1 < len) {
+            temp[j++] = alphabet[(n >> 6) & 0x3F];
+            temp[j++] = '=';
         } else {
-            out[j++] = alphabet[(n >> 6) & 0x3F];
-        }
-        if (i > len - 1 || (i == len && (len % 3) != 0)) {
-            /* Don't add padding */
-        } else {
-            out[j++] = alphabet[n & 0x3F];
+            temp[j++] = '=';
+            temp[j++] = '=';
         }
     }
-    out[j] = '\0';
+    temp[j] = '\0';
+
+    /* URL-encode +, /, = for form data */
+    char *dst = out;
+    char *dst_end = out + out_size - 4;
+    for (const char *src = temp; *src && dst < dst_end; src++) {
+        if (*src == '+') {
+            *dst++ = '%'; *dst++ = '2'; *dst++ = 'B';
+        } else if (*src == '/') {
+            *dst++ = '%'; *dst++ = '2'; *dst++ = 'F';
+        } else if (*src == '=') {
+            *dst++ = '%'; *dst++ = '3'; *dst++ = 'D';
+        } else {
+            *dst++ = *src;
+        }
+    }
+    *dst = '\0';
 }
 
 /*
@@ -527,46 +560,98 @@ static char *build_registration_params(const char *cc, const char *phone,
     size_t device_id_len;
     generate_device_identity(device_id, &device_id_len);
 
-    /* Hex encode device identity */
+    /* Hex encode device identity for id parameter */
     char device_id_hex[64];
     for (size_t i = 0; i < device_id_len; i++) {
         snprintf(device_id_hex + i * 2, 3, "%02x", device_id[i]);
     }
 
+    /* Generate fdid (Firebase/Facebook Device ID) as standard UUID with dashes */
+    uint8_t fdid_bytes[16];
+    crypto_random(fdid_bytes, 16);
+    fdid_bytes[6] = (fdid_bytes[6] & 0x0F) | 0x40;  /* Version 4 */
+    fdid_bytes[8] = (fdid_bytes[8] & 0x3F) | 0x80;  /* Variant 1 */
+    char fdid[64];
+    snprintf(fdid, sizeof(fdid),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             fdid_bytes[0], fdid_bytes[1], fdid_bytes[2], fdid_bytes[3],
+             fdid_bytes[4], fdid_bytes[5], fdid_bytes[6], fdid_bytes[7],
+             fdid_bytes[8], fdid_bytes[9], fdid_bytes[10], fdid_bytes[11],
+             fdid_bytes[12], fdid_bytes[13], fdid_bytes[14], fdid_bytes[15]);
+
+    /* Generate expid (experiment ID) as base64 */
+    uint8_t expid_bytes[16];
+    crypto_random(expid_bytes, 16);
+    char expid[64];
+    base64url_encode(expid_bytes, 16, expid, sizeof(expid));
+
+    /* Generate backup_token as base64 */
+    uint8_t backup_bytes[20];
+    crypto_random(backup_bytes, 20);
+    char backup_token[64];
+    base64url_encode(backup_bytes, 20, backup_token, sizeof(backup_token));
+
     /* Generate temporary Signal keys for registration */
-    uint8_t identity_priv[32], identity_pub[32];
+
+    /* Generate identity key pair as Ed25519 */
+    uint8_t identity_pub[32], identity_priv[64];
+    crypto_sign_keypair(identity_pub, identity_priv);
+
+    /* Generate signed prekey as Curve25519 */
     uint8_t signed_prekey_priv[32], signed_prekey_pub[32];
-
-    /* Generate identity key */
-    crypto_random(identity_priv, 32);
-    identity_priv[0] &= 248;
-    identity_priv[31] &= 127;
-    identity_priv[31] |= 64;
-    crypto_scalarmult_base(identity_pub, identity_priv);
-
-    /* Generate signed prekey */
     crypto_random(signed_prekey_priv, 32);
     signed_prekey_priv[0] &= 248;
     signed_prekey_priv[31] &= 127;
     signed_prekey_priv[31] |= 64;
     crypto_scalarmult_base(signed_prekey_pub, signed_prekey_priv);
+    sodium_memzero(signed_prekey_priv, sizeof(signed_prekey_priv));
 
-    /* Sign the prekey with identity (simplified XEdDSA) */
-    uint8_t signed_prekey_sig[64];
-    uint8_t ed_priv[64], ed_pub[32];
-    crypto_sign_seed_keypair(ed_pub, ed_priv, identity_priv);
-    unsigned long long sig_len;
-    crypto_sign_detached(signed_prekey_sig, &sig_len, signed_prekey_pub, 32, ed_priv);
-    sodium_memzero(ed_priv, sizeof(ed_priv));
-
-    /* Generate registration ID */
+    /* Generate registration ID and encode as base64 */
     uint32_t reg_id = randombytes_uniform(16380) + 1;
+    uint8_t reg_id_bytes[4];
+    reg_id_bytes[0] = (reg_id >> 24) & 0xFF;
+    reg_id_bytes[1] = (reg_id >> 16) & 0xFF;
+    reg_id_bytes[2] = (reg_id >> 8) & 0xFF;
+    reg_id_bytes[3] = reg_id & 0xFF;
+    char e_regid[16];
+    base64url_encode(reg_id_bytes, 4, e_regid, sizeof(e_regid));
 
-    /* Base64 encode keys for transmission */
-    char e_ident[64], e_skey_val[64], e_skey_sig[128];
-    base64url_encode(identity_pub, 32, e_ident, sizeof(e_ident));
-    base64url_encode(signed_prekey_pub, 32, e_skey_val, sizeof(e_skey_val));
-    base64url_encode(signed_prekey_sig, 64, e_skey_sig, sizeof(e_skey_sig));
+    /* Build prefixed keys for transmission */
+    uint8_t ident_with_prefix[33], skey_with_prefix[33];
+    ident_with_prefix[0] = 0x05;
+    memcpy(ident_with_prefix + 1, identity_pub, 32);
+    skey_with_prefix[0] = 0x05;
+    memcpy(skey_with_prefix + 1, signed_prekey_pub, 32);
+
+    /* Sign the prefixed prekey */
+    uint8_t signed_prekey_sig[64];
+    unsigned long long sig_len;
+    crypto_sign_detached(signed_prekey_sig, &sig_len, skey_with_prefix, 33, identity_priv);
+    sodium_memzero(identity_priv, sizeof(identity_priv));
+
+    /* Signed prekey ID */
+    const char *e_skey_id = "AQ%3D%3D";
+
+    /* Generate Noise protocol authentication key */
+    uint8_t auth_priv[32], auth_pub[32];
+    crypto_random(auth_priv, 32);
+    auth_priv[0] &= 248;
+    auth_priv[31] &= 127;
+    auth_priv[31] |= 64;
+    crypto_scalarmult_base(auth_pub, auth_priv);
+    char authkey[64];
+    base64url_encode(auth_pub, 32, authkey, sizeof(authkey));
+    sodium_memzero(auth_priv, sizeof(auth_priv));
+
+    char e_ident[256], e_skey_val[256], e_skey_sig_b64[512];
+    base64url_encode(ident_with_prefix, 33, e_ident, sizeof(e_ident));
+    base64url_encode(skey_with_prefix, 33, e_skey_val, sizeof(e_skey_val));
+    base64url_encode(signed_prekey_sig, 64, e_skey_sig_b64, sizeof(e_skey_sig_b64));
+
+    /* e2e_identity: try raw base64 (not URL-encoded) with sodium's encoder */
+    char e2e_identity[256];
+    sodium_bin2base64(e2e_identity, sizeof(e2e_identity), ident_with_prefix, 33,
+                      sodium_base64_VARIANT_ORIGINAL);
 
     /* Generate authentication token */
     char full_phone[32];
@@ -579,7 +664,11 @@ static char *build_registration_params(const char *cc, const char *phone,
     char *params = malloc(4096);
     if (params == NULL) return NULL;
 
-    /* Core parameters */
+    /* Core parameters
+     * client_metrics: JSON {"attempts":N} - URL encoded
+     * simnum: "0" or "1" based on IMSI availability (0 = no SIM info)
+     * offline_ab: JSON object for A/B testing, empty {} for fresh install
+     */
     snprintf(params, 4096,
              "cc=%s"
              "&in=%s"
@@ -594,18 +683,23 @@ static char *build_registration_params(const char *cc, const char *phone,
              "&sim_mnc=000"
              "&mistyped=6"
              "&network_radio_type=1"
+             "&simnum=0"
              "&hasav=1"
              "&hasinrc=1"
              "&pid=%d"
              "&id=%s"
              "&rc=0"
+             "&client_metrics=%%7B%%22attempts%%22%%3A1%%7D"  /* {"attempts":1} */
+             "&offline_ab=%%7B%%7D"  /* {} */
              "&token=%s"
-             "&e_regid=%u"
-             "&e_keytype=BQ" /* 0x05 = DJB type, base64 encoded */
+             "&e_regid=%s"
+             "&e_keytype=BQ"
              "&e_ident=%s"
-             "&e_skey_id=AAAAAQ" /* Key ID 1, base64 encoded */
+             "&e_skey_id=%s"
              "&e_skey_val=%s"
              "&e_skey_sig=%s"
+             "&authkey=%s"
+             "&e2e_identity=%s"
              "&fdid=%s"
              "&expid=%s"
              "&backup_token=%s",
@@ -613,17 +707,16 @@ static char *build_registration_params(const char *cc, const char *phone,
              (int)getpid() % 100000,
              device_id_hex,
              has_token ? token : "",
-             reg_id,
+             e_regid,
              e_ident,
+             e_skey_id,
              e_skey_val,
-             e_skey_sig,
-             device_id_hex,
-             device_id_hex,
-             device_id_hex);
-
-    /* Clear sensitive data */
-    sodium_memzero(identity_priv, sizeof(identity_priv));
-    sodium_memzero(signed_prekey_priv, sizeof(signed_prekey_priv));
+             e_skey_sig_b64,
+             authkey,
+             e2e_identity,
+             fdid,
+             expid,
+             backup_token);
 
     return params;
 }
