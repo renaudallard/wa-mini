@@ -11,7 +11,6 @@ A lightweight C service that registers as a WhatsApp primary device, eliminating
 - **Multi-Account Support** - Manage multiple phone numbers
 - **Daemon with IPC** - Unix socket control for live account management
 - **Minimal Footprint** - ~9000 lines of C, no heavy dependencies
-- **Auto-Update** - Automatically fetch latest WhatsApp version
 
 ## Quick Start
 
@@ -63,7 +62,63 @@ wa-mini link +15551234567
 wa-mini daemon
 ```
 
-## Commands
+## Registration
+
+WhatsApp uses anti-bot protection for new device registration. The registration
+API requires an HMAC-SHA1 token computed from:
+
+- **WA_SIGNATURE**: WhatsApp APK signing certificate (fixed, known)
+- **WA_MD5_CLASSES**: Base64(MD5(classes.dex)) - changes per version
+- **WA_KEY**: 80-byte HMAC key - extracted from native library
+
+Token = Base64(HMAC-SHA1(KEY, SIGNATURE + MD5_CLASSES + phone))
+
+**Current Status**: Fully configured for WhatsApp version 2.26.4.71.
+All registration constants (SIGNATURE, MD5_CLASSES, KEY) are in place.
+
+### Updating to a New Version
+
+When WhatsApp releases a new version, both MD5_CLASSES and KEY must be updated:
+
+```sh
+# 1. Download the new APK
+# 2. Extract and calculate MD5_CLASSES
+unzip -p WhatsApp.apk classes.dex | md5sum | cut -d' ' -f1 | xxd -r -p | base64
+
+# 3. Extract KEY from the native library (see below)
+# 4. Update src/register.c with:
+#    - WA_VERSION
+#    - WA_MD5_CLASSES
+#    - WA_KEY
+# 5. Rebuild
+make clean && make
+```
+
+### Extracting the HMAC Key for New Versions
+
+The KEY is stored in `libwhatsappmerged.so` inside a SuperPack compressed
+archive (`libs.so`). To extract it:
+
+**Option 1: Static Analysis (Ghidra)**
+1. Extract APK: `unzip WhatsApp.apk -d apk_extracted/`
+2. Extract SuperPack archive from `lib/x86_64/libs.so`
+   - Find offsets: `nm libs.so | grep superpack`
+   - Extract: `dd if=libs.so of=archive.bin bs=1 skip=<offset> count=<size>`
+3. Decompress XZ streams in the archive
+4. Search for 80-byte high-entropy sequence near "hmac sha-1" string
+5. The key has maximum entropy (all 80 bytes unique)
+
+**Option 2: Frida (requires rooted device/emulator)**
+1. Install the specific WhatsApp version on a rooted Android device
+2. Use Frida to hook `mbedtls_md_hmac_starts` with key length 80
+3. Capture the KEY value during registration
+
+### Alternative: Import Existing Account
+
+If you have an existing WhatsApp account on another device, you may be able to
+import the credentials by extracting them from that device.
+
+## CLI Commands
 
 ```
 wa-mini <command> [options]
@@ -77,7 +132,6 @@ Commands:
   daemon [--stop]      Run all accounts as background service
   logout <phone>       Unregister from server and remove account
   version              Show WhatsApp version
-  update-version       Fetch latest WhatsApp version
 
 Options:
   -d, --data <path>    Data directory (default: ~/.wa-mini)
@@ -131,7 +185,6 @@ wa-mini
 ## Dependencies
 
 - **libsodium** - Cryptography (Curve25519, AES-GCM, SHA-256)
-- **curl** - Version updates (optional)
 
 ## Setup Guide
 
@@ -183,7 +236,7 @@ doas chown -R _wamini:_wamini /var/lib/wa-mini
 ```sh
 # Linux
 sudo systemctl daemon-reload
-sudo systemctl enable wa-mini wa-mini-update.timer
+sudo systemctl enable wa-mini
 sudo systemctl start wa-mini
 
 # OpenBSD

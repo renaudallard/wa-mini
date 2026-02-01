@@ -210,8 +210,8 @@ wa_ctx_t *wa_ctx_new(const char *data_dir)
     /* Load WhatsApp version */
     if (wa_store_config_get(ctx->store, "whatsapp_version",
                             ctx->whatsapp_version, sizeof(ctx->whatsapp_version)) != 0) {
-        /* Default version */
-        strncpy(ctx->whatsapp_version, "2.26.3.79", sizeof(ctx->whatsapp_version) - 1);
+        /* Default version - must match WA_VERSION in register.c */
+        strncpy(ctx->whatsapp_version, "2.26.4.71", sizeof(ctx->whatsapp_version) - 1);
     }
 
     ctx->state = WA_STATE_DISCONNECTED;
@@ -1054,15 +1054,9 @@ wa_error_t wa_version_set(wa_ctx_t *ctx, const char *version)
     return WA_OK;
 }
 
-/* External version functions */
-extern int wa_do_version_update(void *store_ptr, char *version, size_t size);
-
-/* Update WhatsApp version from APKPure */
-wa_error_t wa_version_update(wa_ctx_t *ctx)
-{
-    if (wa_do_version_update(ctx->store, ctx->whatsapp_version,
-                             sizeof(ctx->whatsapp_version)) != 0) {
-        return WA_ERR_NETWORK;
-    }
-    return WA_OK;
-}
+/*
+ * Note: Automatic version updates are disabled. The WhatsApp version and
+ * registration token are tightly coupled - updating the version without
+ * the corresponding HMAC key will cause registration failures.
+ * See src/register.c for manual update instructions.
+ */

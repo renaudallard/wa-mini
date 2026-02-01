@@ -85,7 +85,6 @@ static void print_usage(const char *progname)
         "  daemon [--stop]    Run all accounts as background daemon\n"
         "  logout <phone>     Deregister account and clear credentials\n"
         "  version            Show current WhatsApp version being used\n"
-        "  update-version     Force check and update WhatsApp version\n"
         "\n"
         "Options:\n"
         "  -d, --data <path>     Data directory (default: ~/.wa-mini)\n"
@@ -568,14 +567,6 @@ int main(int argc, char *argv[])
         ret = cmd_status(ctx, data_dir, phone);
     } else if (strcmp(command, "version") == 0) {
         ret = cmd_version(ctx);
-    } else if (strcmp(command, "update-version") == 0) {
-        wa_error_t err = wa_version_update(ctx);
-        if (err != WA_OK) {
-            fprintf(stderr, "Error: %s\n", wa_error_string(err));
-            ret = 1;
-        } else {
-            printf("Version updated.\n");
-        }
     } else if (strcmp(command, "register") == 0) {
         const char *phone = (optind + 1 < argc) ? argv[optind + 1] : NULL;
         const char *method = (optind + 2 < argc) ? argv[optind + 2] : "sms";

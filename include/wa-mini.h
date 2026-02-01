@@ -136,7 +136,6 @@ void wa_stop(wa_ctx_t *ctx);
 
 /* Version management */
 wa_error_t wa_version_get(wa_ctx_t *ctx, char *version, size_t size);
-wa_error_t wa_version_update(wa_ctx_t *ctx);
 wa_error_t wa_version_set(wa_ctx_t *ctx, const char *version);
 
 /* Utility */

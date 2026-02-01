@@ -85,11 +85,9 @@ install-service: install
 	@if [ -d /etc/systemd/system ]; then \
 		install -d $(DESTDIR)$(SYSCONFDIR)/systemd/system; \
 		install -m 644 etc/linux/wa-mini.service $(DESTDIR)$(SYSCONFDIR)/systemd/system/; \
-		install -m 644 etc/linux/wa-mini-update.timer $(DESTDIR)$(SYSCONFDIR)/systemd/system/; \
-		install -m 644 etc/linux/wa-mini-update.service $(DESTDIR)$(SYSCONFDIR)/systemd/system/; \
 		echo "Installed systemd units. Run:"; \
 		echo "  systemctl daemon-reload"; \
-		echo "  systemctl enable wa-mini wa-mini-update.timer"; \
+		echo "  systemctl enable wa-mini"; \
 	fi
 	# OpenBSD rc.d
 	@if [ -d /etc/rc.d ]; then \
@@ -102,8 +100,6 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
 	rm -f $(DESTDIR)$(MANDIR)/wa-mini.1
 	rm -f $(DESTDIR)$(SYSCONFDIR)/systemd/system/wa-mini.service
-	rm -f $(DESTDIR)$(SYSCONFDIR)/systemd/system/wa-mini-update.timer
-	rm -f $(DESTDIR)$(SYSCONFDIR)/systemd/system/wa-mini-update.service
 	rm -f $(DESTDIR)/etc/rc.d/wa-mini
 
 # Development targets

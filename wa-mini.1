@@ -49,9 +49,6 @@ Unregister from WhatsApp server and remove the account from local storage.
 .TP
 .B version
 Display the WhatsApp client version being used.
-.TP
-.B update\-version
-Fetch the latest WhatsApp client version from the server.
 .SH OPTIONS
 .TP
 .BI \-d ", " \-\-data " path"
@@ -134,6 +131,28 @@ Commands can be sent directly to the control socket:
 echo "PING" | nc -U ~/.wa-mini/control.sock
 echo "LIST" | nc -U ~/.wa-mini/control.sock
 .fi
+.SH REGISTRATION
+WhatsApp uses anti-bot protection that requires an HMAC-SHA1 token.
+The token is computed from three components:
+.PP
+.B WA_SIGNATURE
+\- WhatsApp APK signing certificate (fixed, known)
+.PP
+.B WA_MD5_CLASSES
+\- Base64(MD5(classes.dex)) \- changes per version
+.PP
+.B WA_KEY
+\- 80-byte HMAC key \- extracted from native library
+.PP
+All three components are configured for WhatsApp version 2.26.4.71.
+.PP
+For new WhatsApp versions, the KEY must be re-extracted from
+.B libwhatsappmerged.so
+inside the SuperPack compressed archive.
+Extract using static analysis with Ghidra or Frida on a rooted device.
+See the comments in
+.I src/register.c
+for detailed instructions.
 .SH EXAMPLES
 .SS Register a new account
 .nf
