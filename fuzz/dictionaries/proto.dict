@@ -1,0 +1,74 @@
+# Protobuf wire format dictionary
+
+# Wire type markers (tag byte patterns)
+"\x08"
+"\x10"
+"\x18"
+"\x20"
+"\x28"
+"\x0a"
+"\x12"
+"\x1a"
+"\x22"
+"\x2a"
+
+# Common varint values
+"\x00"
+"\x01"
+"\x7f"
+"\x80\x01"
+"\xff\x01"
+"\x80\x80\x01"
+"\xff\xff\x01"
+
+# Length prefixes
+"\x00"
+"\x01"
+"\x10"
+"\x20"
+"\x30"
+"\x40"
+"\x80\x01"
+"\xff\x01"
+
+# HandshakeMessage field tags
+"\x12"
+"\x1a"
+"\x22"
+
+# ClientHello field tags
+"\x0a"
+"\x12"
+"\x1a"
+"\x20"
+"\x2a"
+
+# ServerHello field tags
+"\x0a"
+"\x12"
+"\x1a"
+"\x22"
+
+# ClientPayload field tags
+"\x08"
+"\x18"
+"\x2a"
+"\x38"
+"\x48"
+"\x50"
+"\x9a\x01"
+
+# Fixed size markers (32 bytes, 64 bytes)
+"\x20"
+"\x40"
+
+# Key type byte
+"\x05"
+
+# Boolean values
+"\x00"
+"\x01"
+
+# Large varints for edge cases
+"\xff\xff\xff\xff\x0f"
+"\xff\xff\xff\xff\xff\xff\xff\xff\x7f"

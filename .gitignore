@@ -1,0 +1,21 @@
+# Compiled files
+*.o
+/wa-mini
+
+# Debug builds
+*.dSYM/
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Build artifacts
+*.a
+*.so
+*.dylib
+
+# Test data
+credentials.db

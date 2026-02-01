@@ -1,0 +1,97 @@
+name: Fuzz Testing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Run daily at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzzing duration in seconds'
+        required: false
+        default: '600'
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [xmpp, proto, noise]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libsodium-dev libsqlite3-dev
+
+      - name: Build fuzz target
+        run: make fuzz_${{ matrix.target }}
+
+      - name: Restore corpus cache
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Create corpus directory
+        run: mkdir -p fuzz/corpus/${{ matrix.target }}
+
+      - name: Run fuzzer
+        run: |
+          DURATION=${{ github.event.inputs.duration || '600' }}
+          echo "Running fuzzer for $DURATION seconds..."
+          timeout $DURATION ./fuzz_${{ matrix.target }} \
+            fuzz/corpus/${{ matrix.target }} \
+            -dict=fuzz/dictionaries/${{ matrix.target }}.dict \
+            -max_len=65536 \
+            -jobs=2 \
+            -workers=2 \
+            -print_final_stats=1 \
+            2>&1 | tee fuzz_output.log || true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if ls crash-* 1>/dev/null 2>&1; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "::error::Fuzzer found crashes!"
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No crashes found"
+          fi
+
+      - name: Save corpus cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+
+      - name: Upload crashes
+        uses: actions/upload-artifact@v4
+        if: steps.check_crashes.outputs.found == 'true'
+        with:
+          name: crashes-${{ matrix.target }}
+          path: |
+            crash-*
+            fuzz_output.log
+
+      - name: Upload fuzzing stats
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-stats-${{ matrix.target }}
+          path: fuzz_output.log
+
+      - name: Fail on crashes
+        if: steps.check_crashes.outputs.found == 'true'
+        run: exit 1

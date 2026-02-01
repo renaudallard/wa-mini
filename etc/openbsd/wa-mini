@@ -1,0 +1,20 @@
+#!/bin/ksh
+#
+# wa-mini - Minimal WhatsApp Primary Device
+# OpenBSD rc.d script
+#
+
+daemon="/usr/local/bin/wa-mini"
+daemon_flags="daemon"
+daemon_user="_wamini"
+
+. /etc/rc.d/rc.subr
+
+rc_bg=YES
+rc_reload=NO
+
+rc_pre() {
+    install -d -o _wamini -g _wamini -m 700 /var/lib/wa-mini
+}
+
+rc_cmd $1

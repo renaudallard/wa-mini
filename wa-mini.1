@@ -1,0 +1,191 @@
+.TH WA-MINI 1 "February 2026" "wa-mini" "User Commands"
+.SH NAME
+wa-mini \- minimal WhatsApp primary device service
+.SH SYNOPSIS
+.B wa-mini
+.I command
+.RI [ options ]
+.SH DESCRIPTION
+.B wa-mini
+is a lightweight service that registers as a WhatsApp primary device,
+eliminating the need for a physical phone.
+It can generate link codes for companion devices such as WhatsApp Web,
+WhatsApp Desktop, or bridge software like mautrix-whatsapp.
+.PP
+The service supports multiple phone numbers and can run as a background
+daemon with a Unix socket interface for live account management.
+.SH COMMANDS
+.TP
+.BI register " phone"
+Request SMS verification code for the specified phone number.
+The phone number must be in international format (e.g., +15551234567).
+.TP
+.BI verify " code"
+Submit the SMS verification code received.
+Use with
+.B \-a
+to specify the account.
+.TP
+.BI link " [phone]"
+Generate a link code for companion device pairing.
+If no phone is specified, uses the first registered account.
+.TP
+.B list
+List all registered accounts with their connection status.
+.TP
+.BI status " [phone]"
+Show detailed connection status for an account.
+If no phone is specified, shows status of all accounts.
+.TP
+.B daemon
+Run as a background service managing all registered accounts.
+Each account runs in a separate child process.
+Use
+.B \-\-stop
+to gracefully stop a running daemon.
+.TP
+.BI logout " phone"
+Unregister from WhatsApp server and remove the account from local storage.
+.TP
+.B version
+Display the WhatsApp client version being used.
+.TP
+.B update\-version
+Fetch the latest WhatsApp client version from the server.
+.SH OPTIONS
+.TP
+.BI \-d ", " \-\-data " path"
+Specify the data directory.
+Default is
+.IR ~/.wa-mini .
+.TP
+.BI \-a ", " \-\-account " phone"
+Select which account to operate on.
+Required for
+.B verify
+when multiple accounts exist.
+.TP
+.BR \-s ", " \-\-stop
+Stop the running daemon gracefully.
+.TP
+.BR \-v ", " \-\-verbose
+Enable verbose logging output.
+.TP
+.BR \-h ", " \-\-help
+Display help message and exit.
+.SH FILES
+.TP
+.I ~/.wa-mini/
+Default data directory containing all account data.
+.TP
+.I ~/.wa-mini/config
+Text file storing global configuration as key=value pairs.
+.TP
+.I ~/.wa-mini/accounts/
+Directory containing per-account data files.
+.TP
+.I ~/.wa-mini/accounts/*.acc
+Binary files (312 bytes) storing account credentials and keys.
+.TP
+.I ~/.wa-mini/accounts/*.prekeys
+Binary files storing prekey pools for Signal protocol.
+.TP
+.I ~/.wa-mini/accounts/*.companions
+Binary files storing linked companion device information.
+.TP
+.I ~/.wa-mini/control.sock
+Unix domain socket for daemon IPC (exists only when daemon is running).
+.TP
+.I ~/.wa-mini/daemon.pid
+PID file for the running daemon (exists only when daemon is running).
+.SH DAEMON
+When running as a daemon,
+.B wa-mini
+spawns a separate child process for each registered account.
+The parent process manages a control socket for live account management.
+.SS Control Socket
+The control socket is created at
+.I <data_dir>/control.sock
+with mode 0600 (owner access only).
+It uses a line-based text protocol with JSON responses.
+.SS IPC Commands
+.TS
+l l l.
+Command	Arguments	Description
+_
+PING	\-	Health check
+LIST	\-	List running accounts with status
+STATUS	phone	Get account connection status
+REGISTER	phone [method]	Request SMS verification code
+VERIFY	phone code	Verify code and start account
+LOGOUT	phone	Stop process and delete account
+RELOAD	\-	Rescan database for new accounts
+STOP	\-	Graceful daemon shutdown
+.TE
+.SS Response Format
+.nf
+OK {"key":"value"}
+ERR {"code":"ERROR_CODE","message":"..."}
+.fi
+.SS Manual IPC
+Commands can be sent directly to the control socket:
+.PP
+.nf
+echo "PING" | nc -U ~/.wa-mini/control.sock
+echo "LIST" | nc -U ~/.wa-mini/control.sock
+.fi
+.SH EXAMPLES
+.SS Register a new account
+.nf
+wa-mini register +15551234567
+wa-mini verify -a +15551234567 123456
+.fi
+.SS Generate link code for companion device
+.nf
+wa-mini link +15551234567
+.fi
+.SS Run as daemon
+.nf
+wa-mini daemon
+wa-mini list
+wa-mini daemon --stop
+.fi
+.SS Add account while daemon is running
+.nf
+wa-mini register +15559876543
+wa-mini verify -a +15559876543 654321
+.fi
+.SS System service setup
+.nf
+sudo useradd -r -s /sbin/nologin -d /var/lib/wa-mini _wamini
+sudo mkdir -p /var/lib/wa-mini
+sudo chown _wamini:_wamini /var/lib/wa-mini
+sudo systemctl enable wa-mini
+sudo systemctl start wa-mini
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+An error occurred.
+.SH SECURITY
+All cryptographic operations use libsodium.
+Account credentials are stored in binary files with 0600 permissions.
+All file writes use atomic rename for crash safety.
+Binary files include CRC32 checksums for integrity verification.
+The control socket is created with 0600 permissions for owner-only access.
+When running as a system service, it is recommended to use a dedicated
+unprivileged user.
+.SH SEE ALSO
+.UR https://noiseprotocol.org/noise.html
+Noise Protocol Framework
+.UE ,
+.UR https://doc.libsodium.org/
+libsodium documentation
+.UE
+.SH AUTHORS
+Renaud Allard <renaud@allard.it>
+.SH LICENSE
+BSD 2-Clause License

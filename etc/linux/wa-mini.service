@@ -1,0 +1,36 @@
+[Unit]
+Description=WhatsApp Mini Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=_wamini
+Group=_wamini
+ExecStart=/usr/local/bin/wa-mini daemon
+Restart=always
+RestartSec=30
+WatchdogSec=3600
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+
+# Data directory
+WorkingDirectory=/var/lib/wa-mini
+ReadWritePaths=/var/lib/wa-mini
+
+[Install]
+WantedBy=multi-user.target

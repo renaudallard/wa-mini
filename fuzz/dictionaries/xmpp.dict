@@ -1,0 +1,67 @@
+# XMPP Binary protocol dictionary
+# Tag names
+"iq"
+"message"
+"presence"
+"query"
+"ping"
+"success"
+"failure"
+"stream:error"
+"receipt"
+"ack"
+
+# Common attributes
+"id"
+"type"
+"from"
+"to"
+"xmlns"
+"participant"
+"notify"
+"jid"
+
+# Type values
+"get"
+"set"
+"result"
+"error"
+"available"
+"unavailable"
+"subscribe"
+
+# Namespaces
+"urn:xmpp:ping"
+"w:p"
+"w:profile:picture"
+"encrypt"
+
+# Binary markers (hex-encoded)
+"\x00"
+"\x01"
+"\x02"
+"\xf8"
+"\xf9"
+"\xfa"
+"\xfb"
+"\xfc"
+"\xfd"
+"\xfe"
+"\xff"
+
+# JID suffixes
+"@s.whatsapp.net"
+"@g.us"
+"@broadcast"
+
+# Numbers (nibble-encoded)
+"0"
+"1"
+"2"
+"3"
+"4"
+"5"
+"6"
+"7"
+"8"
+"9"
