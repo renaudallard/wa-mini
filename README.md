@@ -71,16 +71,22 @@ wa-mini daemon
 Direct registration is not supported because WhatsApp requires Android Keystore
 Attestation since 2025. Instead, you must:
 
-1. Register on a real Android device (physical or rooted emulator)
+1. Register on a rooted Android device (physical or emulator)
 2. Extract the credentials from the device
 3. Import them into wa-mini
 
 ### Prerequisites
 
-- Rooted Android device or emulator (Android-x86 VM works)
+- **Rooted Android device or emulator** (Android-x86 VM works)
 - ADB access to the device
 - Python 3 with `cryptography` module
 - WhatsApp installed and registered on the device
+
+**Important:** Root access is mandatory. WhatsApp stores its credentials in
+`/data/data/com.whatsapp/` which is only accessible with root privileges.
+Without root, extraction is impossible - there is no workaround. If you don't
+have a rooted device, you can use an Android-x86 emulator (e.g., in a VM) which
+typically has root access by default.
 
 ### Step 1: Register on Android
 
