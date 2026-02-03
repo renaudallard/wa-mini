@@ -105,10 +105,6 @@ wa_error_t wa_account_get(wa_ctx_t *ctx, const char *phone, wa_account_t *accoun
 wa_error_t wa_account_delete(wa_ctx_t *ctx, const char *phone);
 void wa_account_free(wa_account_t *accounts, int count);
 
-/* Registration */
-wa_error_t wa_register_request(wa_ctx_t *ctx, const char *phone, const char *method);
-wa_error_t wa_register_verify(wa_ctx_t *ctx, const char *phone, const char *code);
-
 /* Unregistration (deregister from WhatsApp servers) */
 wa_error_t wa_unregister(wa_ctx_t *ctx, const char *phone);
 

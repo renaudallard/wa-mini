@@ -22,9 +22,6 @@
 /* Global verbose flag for debug logging */
 int wa_verbose = 0;
 
-/* External registration functions */
-extern int wa_do_registration(const char *phone, const char *method);
-extern int wa_do_verification(const char *phone, const char *code, wa_account_t *account);
 
 /* External companion linking functions */
 extern int wa_link_display(const char *phone);
@@ -77,10 +74,8 @@ static void print_usage(const char *progname)
         "Usage: %s <command> [options]\n"
         "\n"
         "Commands:\n"
-        "  register <phone>   Register new phone number (+1234567890)\n"
-        "  verify <code>      Enter SMS verification code for pending registration\n"
         "  link [phone]       Display QR/link code for companion linking\n"
-        "  list               List all registered accounts\n"
+        "  list               List all imported accounts\n"
         "  status [phone]     Show connection and device status\n"
         "  daemon [--stop]    Run all accounts as background daemon\n"
         "  logout <phone>     Deregister account and clear credentials\n"
@@ -97,16 +92,19 @@ static void print_usage(const char *progname)
         "  list, status          Query daemon for live account status\n"
         "  daemon --stop         Gracefully stop the daemon\n"
         "\n"
+        "Account Setup:\n"
+        "  Registration is not supported directly. Extract credentials from\n"
+        "  a rooted Android device using tools/extract_credentials.py\n"
+        "  See README.md for detailed instructions.\n"
+        "\n"
         "Examples:\n"
-        "  %s register +15551234567\n"
-        "  %s verify 123456\n"
         "  %s link +15551234567\n"
         "  %s list\n"
         "  %s daemon\n"
         "  %s daemon --stop\n"
         "  %s logout +15551234567\n",
         WA_MINI_VERSION, progname,
-        progname, progname, progname, progname, progname, progname, progname);
+        progname, progname, progname, progname, progname);
 }
 
 /* Command: list */
@@ -230,106 +228,6 @@ static int cmd_version(wa_ctx_t *ctx)
     return 0;
 }
 
-/* Command: register */
-static int cmd_register(wa_ctx_t *ctx, const char *data_dir,
-                        const char *phone, const char *method)
-{
-    WA_DEBUG("register phone=%s method=%s", phone ? phone : "(null)", method ? method : "sms");
-
-    if (phone == NULL || phone[0] != '+') {
-        fprintf(stderr, "Error: Phone number must start with '+' (e.g., +15551234567)\n");
-        return 1;
-    }
-
-    /* Try daemon first */
-    int fd = control_connect(data_dir);
-    if (fd >= 0) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "REGISTER %s %s", phone, method ? method : "sms");
-        control_send_command(fd, cmd);
-        char response[1024];
-        if (control_recv_response(fd, response, sizeof(response)) == 0) {
-            printf("%s", response);
-        }
-        close(fd);
-        return 0;
-    }
-
-    /* Fall back to direct registration */
-    /* Check if account already exists */
-    wa_account_t existing;
-    if (wa_account_get(ctx, phone, &existing) == WA_OK) {
-        fprintf(stderr, "Error: Account %s already registered\n", phone);
-        fprintf(stderr, "Use 'wa-mini logout %s' to remove it first\n", phone);
-        return 1;
-    }
-
-    return wa_do_registration(phone, method);
-}
-
-/* Command: verify */
-static int cmd_verify(wa_ctx_t *ctx, const char *data_dir,
-                      const char *phone, const char *code)
-{
-    WA_DEBUG("verify phone=%s code=%s", phone ? phone : "(null)", code ? "******" : "(null)");
-
-    if (code == NULL || strlen(code) != 6) {
-        fprintf(stderr, "Error: Verification code must be 6 digits\n");
-        return 1;
-    }
-
-    if (phone == NULL) {
-        fprintf(stderr, "Error: Phone number required for verification\n");
-        fprintf(stderr, "Usage: wa-mini verify -a +15551234567 123456\n");
-        return 1;
-    }
-
-    /* Try daemon first - it will save and start the account automatically */
-    int fd = control_connect(data_dir);
-    if (fd >= 0) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "VERIFY %s %s", phone, code);
-        control_send_command(fd, cmd);
-        char response[1024];
-        if (control_recv_response(fd, response, sizeof(response)) == 0) {
-            printf("%s", response);
-        }
-        close(fd);
-        return 0;
-    }
-
-    /* Fall back to direct verification (no daemon running) */
-    /* Create account structure */
-    wa_account_t account;
-    sodium_memzero(&account, sizeof(account));
-    strncpy(account.phone, phone, sizeof(account.phone) - 1);
-
-    /* Perform verification (generates keys) */
-    if (wa_do_verification(phone, code, &account) != 0) {
-        return 1;
-    }
-
-    /* Save account to database */
-    wa_store_t *store = wa_store_open(data_dir);
-    if (store != NULL) {
-        account.active = 1;
-        account.registered_at = time(NULL);
-        if (wa_store_account_save(store, &account) == 0) {
-            printf("Account %s saved successfully\n", phone);
-        } else {
-            fprintf(stderr, "Warning: Failed to save account\n");
-        }
-        wa_store_close(store);
-    } else {
-        fprintf(stderr, "Warning: Could not open database\n");
-    }
-
-    printf("Phone: %s\n", account.phone);
-    printf("Registration ID: %u\n", account.registration_id);
-
-    (void)ctx;
-    return 0;
-}
 
 /* Command: link */
 static int cmd_link(wa_ctx_t *ctx, const char *phone)
@@ -567,14 +465,6 @@ int main(int argc, char *argv[])
         ret = cmd_status(ctx, data_dir, phone);
     } else if (strcmp(command, "version") == 0) {
         ret = cmd_version(ctx);
-    } else if (strcmp(command, "register") == 0) {
-        const char *phone = (optind + 1 < argc) ? argv[optind + 1] : NULL;
-        const char *method = (optind + 2 < argc) ? argv[optind + 2] : "sms";
-        ret = cmd_register(ctx, data_dir, phone, method);
-    } else if (strcmp(command, "verify") == 0) {
-        const char *code = (optind + 1 < argc) ? argv[optind + 1] : NULL;
-        const char *phone = account;  /* Use -a/--account option */
-        ret = cmd_verify(ctx, data_dir, phone, code);
     } else if (strcmp(command, "link") == 0) {
         const char *phone = (optind + 1 < argc) ? argv[optind + 1] : account;
         ret = cmd_link(ctx, phone);

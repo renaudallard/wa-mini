@@ -30,10 +30,6 @@
 /* Forward declarations for external functions */
 extern void daemon_run_account(const char *data_dir, const char *phone);
 
-/* Registration functions */
-extern int wa_do_registration(const char *phone, const char *method);
-extern int wa_do_verification(const char *phone, const char *code, wa_account_t *account);
-
 /* Store functions */
 typedef struct wa_store wa_store_t;
 extern wa_store_t *wa_store_open(const char *data_dir);
@@ -258,112 +254,6 @@ static int handle_status(int client_fd, daemon_ctx_t *ctx, const char *phone)
     return send_ok(client_fd, json);
 }
 
-static int handle_register(int client_fd, daemon_ctx_t *ctx,
-                           const char *phone, const char *method)
-{
-    if (phone == NULL || phone[0] != '+') {
-        return send_error(client_fd, "INVALID_ARGS",
-            "Phone number must start with +");
-    }
-
-    /* Check if account already exists */
-    wa_ctx_t *wa_ctx = wa_ctx_new(ctx->data_dir);
-    if (wa_ctx != NULL) {
-        wa_account_t existing;
-        if (wa_account_get(wa_ctx, phone, &existing) == WA_OK) {
-            wa_ctx_free(wa_ctx);
-            return send_error(client_fd, "EXISTS",
-                "Account already registered");
-        }
-        wa_ctx_free(wa_ctx);
-    }
-
-    /* Check if already running */
-    if (find_child_by_phone(ctx, phone) != NULL) {
-        return send_error(client_fd, "RUNNING",
-            "Account already running");
-    }
-
-    /* Perform registration (requests SMS code) */
-    const char *reg_method = (method != NULL && method[0] != '\0') ? method : "sms";
-    int ret = wa_do_registration(phone, reg_method);
-
-    if (ret != 0) {
-        return send_error(client_fd, "REGISTER_FAILED",
-            "Registration request failed");
-    }
-
-    char json[128];
-    snprintf(json, sizeof(json),
-        "{\"phone\":\"%s\",\"method\":\"%s\",\"status\":\"code_sent\"}",
-        phone, reg_method);
-    return send_ok(client_fd, json);
-}
-
-static int handle_verify(int client_fd, daemon_ctx_t *ctx,
-                         const char *phone, const char *code)
-{
-    if (phone == NULL || phone[0] != '+') {
-        return send_error(client_fd, "INVALID_ARGS",
-            "Phone number must start with +");
-    }
-
-    if (code == NULL || strlen(code) != 6) {
-        return send_error(client_fd, "INVALID_ARGS",
-            "Verification code must be 6 digits");
-    }
-
-    /* Check if already running */
-    if (find_child_by_phone(ctx, phone) != NULL) {
-        return send_error(client_fd, "RUNNING",
-            "Account already running");
-    }
-
-    /* Perform verification */
-    wa_account_t account;
-    memset(&account, 0, sizeof(account));
-    size_t phone_len = strlen(phone);
-    if (phone_len >= sizeof(account.phone)) {
-        phone_len = sizeof(account.phone) - 1;
-    }
-    memcpy(account.phone, phone, phone_len);
-
-    int ret = wa_do_verification(phone, code, &account);
-    if (ret != 0) {
-        return send_error(client_fd, "VERIFY_FAILED",
-            "Verification failed");
-    }
-
-    /* Save account to database */
-    wa_store_t *store = wa_store_open(ctx->data_dir);
-    if (store == NULL) {
-        return send_error(client_fd, "STORAGE",
-            "Failed to open database");
-    }
-
-    account.active = 1;
-    account.registered_at = time(NULL);
-
-    if (wa_store_account_save(store, &account) != 0) {
-        wa_store_close(store);
-        return send_error(client_fd, "STORAGE",
-            "Failed to save account");
-    }
-    wa_store_close(store);
-
-    /* Start child process for new account */
-    if (daemon_start_account(ctx, phone) != 0) {
-        return send_error(client_fd, "START_FAILED",
-            "Account saved but failed to start");
-    }
-
-    char json[128];
-    snprintf(json, sizeof(json),
-        "{\"phone\":\"%s\",\"status\":\"verified\",\"started\":true}",
-        phone);
-    return send_ok(client_fd, json);
-}
-
 static int handle_link(int client_fd, daemon_ctx_t *ctx, const char *phone)
 {
     (void)ctx;
@@ -519,10 +409,6 @@ static int dispatch_command(int client_fd, daemon_ctx_t *ctx)
         return handle_list(client_fd, ctx);
     } else if (strcmp(cmd, "STATUS") == 0) {
         return handle_status(client_fd, ctx, arg1);
-    } else if (strcmp(cmd, "REGISTER") == 0) {
-        return handle_register(client_fd, ctx, arg1, arg2);
-    } else if (strcmp(cmd, "VERIFY") == 0) {
-        return handle_verify(client_fd, ctx, arg1, arg2);
     } else if (strcmp(cmd, "LINK") == 0) {
         return handle_link(client_fd, ctx, arg1);
     } else if (strcmp(cmd, "LOGOUT") == 0) {

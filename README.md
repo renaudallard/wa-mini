@@ -2,15 +2,20 @@
 
 **Minimal WhatsApp Primary Device Service**
 
-A lightweight C service that registers as a WhatsApp primary device, eliminating the need for a physical phone. Generate QR/link codes for companion devices (like mautrix-whatsapp) to link to it.
+A lightweight C service that acts as a WhatsApp primary device, allowing companion
+devices (like mautrix-whatsapp) to link to it without a physical phone running.
 
 ## Features
 
-- **Primary Device Registration** - Register with WhatsApp using SMS verification
+- **Primary Device Mode** - Import credentials from Android to run as primary device
 - **Companion Linking** - Generate link codes for WhatsApp Web/Desktop/bridges
 - **Multi-Account Support** - Manage multiple phone numbers
 - **Daemon with IPC** - Unix socket control for live account management
 - **Minimal Footprint** - ~9000 lines of C, no heavy dependencies
+
+**Note:** Direct registration is not supported due to WhatsApp's Android Keystore
+Attestation requirement. You must register on a real Android device first, then
+extract the credentials.
 
 ## Quick Start
 
@@ -51,9 +56,8 @@ man wa-mini
 ### Usage
 
 ```sh
-# Register a new account
-wa-mini register +15551234567
-wa-mini verify -a +15551234567 123456
+# Import credentials (see "Credential Extraction" section below)
+./tools/extract_credentials.py --adb --phone +15551234567
 
 # Generate link code for companion device
 wa-mini link +15551234567
@@ -62,111 +66,115 @@ wa-mini link +15551234567
 wa-mini daemon
 ```
 
-## Registration
+## Credential Extraction
 
-**WARNING: As of 2025, WhatsApp registration requires Android Keystore
-Attestation. See "Current Limitations" below.**
+Direct registration is not supported because WhatsApp requires Android Keystore
+Attestation since 2025. Instead, you must:
 
-### Current Limitations (2025)
+1. Register on a real Android device (physical or rooted emulator)
+2. Extract the credentials from the device
+3. Import them into wa-mini
 
-Research conducted via Frida dynamic instrumentation on WhatsApp 2.26.x revealed
-that WhatsApp has fundamentally changed its registration security model.
+### Prerequisites
 
-#### Android Keystore Attestation Required
+- Rooted Android device or emulator (Android-x86 VM works)
+- ADB access to the device
+- Python 3 with `cryptography` module
+- WhatsApp installed and registered on the device
 
-WhatsApp's `/v2/code` registration endpoint now requires an `Authorization`
-header containing an X.509 certificate chain that proves:
+### Step 1: Register on Android
 
-1. **Device Authenticity** - Request originates from a genuine Android device
-2. **APK Integrity** - WhatsApp APK has the correct signature (`04f8678c`)
-3. **Hardware-Backed Key** - A cryptographic challenge was signed by a key
-   generated in the Android Keystore (hardware or TEE-backed)
+Install WhatsApp on your rooted Android device and complete the normal
+registration process (SMS verification).
 
-The certificate chain structure:
-```
-Root:         Android Keystore Software Attestation Root (Google, Inc.)
-Intermediate: Android Keystore Software Attestation Intermediate
-Leaf:         Android Keystore Key (contains attestation extension)
-```
+### Step 2: Extract Credentials
 
-The attestation extension (OID 1.3.6.1.4.1.11129.2.1.17) includes:
-- Package name: `com.whatsapp`
-- APK signature digest
-- Challenge-response proof
-- Device security level (software/TEE/strongbox)
+Use the provided extraction tool:
 
-#### What This Means
+```sh
+# Pull credentials from connected Android device
+./tools/extract_credentials.py --adb --phone +15551234567
 
-The traditional HMAC-SHA1 token (computed from `KEY + SIGNATURE + MD5_CLASSES +
-phone`) is **no longer sufficient** for registration. Even with the correct
-token, requests are rejected without valid Android Keystore attestation.
-
-**This attestation cannot be faked from a non-Android client** because:
-- The certificate chain is verified against Google's root certificates
-- The attestation proves keys were generated on-device
-- The challenge-response binds the attestation to the specific request
-
-#### Viable Alternatives
-
-1. **Register on Real Android, Export Credentials**
-   - Install WhatsApp on an Android device/emulator
-   - Complete registration normally
-   - Export the account credentials for use with wa-mini
-   - Use wa-mini only for the messaging protocol (post-registration)
-
-2. **Use Companion Device Pairing**
-   - Register on a real phone
-   - Use wa-mini as a linked companion device
-   - Requires keeping the primary phone active
-
-3. **Already-Registered Accounts**
-   - If you have existing WhatsApp credentials from before 2025
-   - These may continue working for the messaging protocol
-   - Re-registration would require Android attestation
-
-### Historical: HMAC Token (Pre-2025)
-
-For reference, WhatsApp previously used anti-bot protection via HMAC tokens:
-
-- **WA_SIGNATURE**: WhatsApp APK signing certificate (fixed, known)
-- **WA_MD5_CLASSES**: Base64(MD5(classes.dex)) - changes per version
-- **WA_KEY**: 80-byte HMAC key - extracted from native library
-
-```
-Token = Base64(HMAC-SHA1(KEY, SIGNATURE + MD5_CLASSES + phone))
+# Or extract from already-pulled database files
+./tools/extract_credentials.py --axolotl /path/to/axolotl.db \
+                               --keystore /path/to/keystore.xml \
+                               --phone +15551234567
 ```
 
-The code in `src/register.c` still implements this token generation, but it
-alone is no longer accepted by WhatsApp's servers.
+The tool extracts from:
+- `/data/data/com.whatsapp/databases/axolotl.db` - Signal protocol keys
+- `/data/data/com.whatsapp/shared_prefs/keystore.xml` - Noise protocol keys
 
-### Research Methodology
+### Step 3: Manual Extraction (if tool fails)
 
-The attestation requirement was discovered through:
+If the extraction tool doesn't work, extract manually:
 
-1. **Frida SSL Interception** - Hooking `SSL_write` in `libssl.so` to capture
-   HTTP request bodies before encryption
-2. **Traffic Analysis** - Examining `/v2/code` POST requests
-3. **Certificate Decoding** - Parsing the Authorization header to identify
-   Android Keystore attestation certificates
+```sh
+# Connect to device
+adb connect <device_ip>:5555
 
-Captured request structure:
+# Pull databases (requires root)
+adb shell "su -c 'cp /data/data/com.whatsapp/databases/axolotl.db /sdcard/'"
+adb shell "su -c 'cp /data/data/com.whatsapp/shared_prefs/keystore.xml /sdcard/'"
+adb pull /sdcard/axolotl.db
+adb pull /sdcard/keystore.xml
+
+# Dump database to see structure
+./tools/extract_credentials.py --dump axolotl.db
 ```
-POST /v2/code HTTP/1.1
-Authorization: MIICiz... [Base64 X.509 certificate chain]
-Content-Type: application/x-www-form-urlencoded
-Content-Length: 5550
 
-[body with phone, method, token, and other parameters]
-```
+### Credential Storage Format
 
-### Troubleshooting Registration
+WhatsApp stores credentials in SQLite (`axolotl.db`):
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `bad_token` | Missing/invalid attestation | Cannot be fixed without Android device |
-| `bad_param` | Malformed request | Check URL encoding of parameters |
-| `old_version` | WhatsApp version outdated | Update WA_VERSION in register.c |
-| `blocked` | Too many attempts | Wait and try again later |
+| Table | Contents |
+|-------|----------|
+| `identities` | Identity key pair (private + public), registration ID |
+| `signed_prekeys` | Signed prekey (protobuf record with private key, signature) |
+| `prekeys` | One-time prekeys pool |
+
+The `keystore.xml` file contains:
+- `client_static_keypair_pwd_enc` - Encrypted Noise keypair (newer versions)
+- `server_static_public` - WhatsApp server's Noise public key (plaintext)
+
+**Note:** In newer WhatsApp versions, the Noise keypair is encrypted with
+device-specific keys. If extraction fails, wa-mini can generate a fresh Noise
+keypair - WhatsApp servers accept new Noise keys for existing accounts.
+
+### wa-mini Account File Format
+
+Credentials are stored in `~/.wa-mini/accounts/<phone>.acc` (312 bytes):
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0-3 | 4 | Magic "WAMN" |
+| 4 | 1 | Format version (1) |
+| 5 | 1 | Active flag |
+| 8-27 | 20 | Phone number |
+| 28-59 | 32 | Identity private key |
+| 60-91 | 32 | Identity public key |
+| 92-123 | 32 | Signed prekey private |
+| 124-187 | 64 | Signed prekey signature |
+| 188-191 | 4 | Signed prekey ID |
+| 192-195 | 4 | Registration ID |
+| 196-227 | 32 | Noise static private |
+| 228-259 | 32 | Noise static public |
+| 260-291 | 32 | Server static public |
+| 292-299 | 8 | Timestamp |
+| 308-311 | 4 | CRC32 checksum |
+
+### Why Registration Doesn't Work
+
+WhatsApp's `/v2/code` endpoint requires Android Keystore Attestation - an X.509
+certificate chain proving the request comes from a genuine Android device with
+the legitimate WhatsApp app. This attestation cannot be faked from non-Android
+clients because:
+
+- Certificate chain is verified against Google's root certificates
+- Attestation proves keys were generated in hardware/TEE
+- Challenge-response binds attestation to the specific request
+
+See the research notes in `docs/attestation.md` for full technical details.
 
 ## CLI Commands
 
@@ -174,10 +182,8 @@ Content-Length: 5550
 wa-mini <command> [options]
 
 Commands:
-  register <phone>     Register new phone number (+1234567890)
-  verify <code>        Enter SMS verification code
   link [phone]         Display link code for companion pairing
-  list                 List all registered accounts
+  list                 List all imported accounts
   status [phone]       Show connection status
   daemon [--stop]      Run all accounts as background service
   logout <phone>       Unregister from server and remove account
@@ -196,15 +202,13 @@ Options:
 ```
 wa-mini
 ├── CLI Interface
-│   ├── register/verify    SMS registration (via daemon if running)
 │   ├── link               Companion pairing
 │   └── daemon             Background service with IPC
 │
 ├── Daemon (multi-process)
 │   ├── Parent Process     Control socket, child management
 │   │   ├── Handles IPC commands
-│   │   ├── Spawns/reaps child processes
-│   │   └── Registration/verification
+│   │   └── Spawns/reaps child processes
 │   │
 │   └── Child Processes    One per account
 │       ├── WhatsApp connection
@@ -259,14 +263,13 @@ doas mkdir -p /var/lib/wa-mini
 doas chown _wamini:_wamini /var/lib/wa-mini
 ```
 
-### 3. Register Account
+### 3. Import Account
 
 ```sh
-# Request SMS verification code
-wa-mini register +15551234567
+# Extract credentials from rooted Android (see "Credential Extraction" above)
+./tools/extract_credentials.py --adb --phone +15551234567
 
-# Enter the code you receive
-wa-mini verify -a +15551234567 123456
+# The tool creates ~/.wa-mini/accounts/+15551234567.acc
 ```
 
 ### 4. Copy Credentials to Service Directory
@@ -303,23 +306,23 @@ wa-mini link +15551234567
 
 ### Adding More Accounts
 
-When the daemon is running, new accounts are started automatically after verification:
+Extract credentials from your Android device and notify the daemon:
 
 ```sh
-# Register and verify - daemon handles everything
-wa-mini register +15559876543
-wa-mini verify -a +15559876543 654321
-# Account is automatically saved and started by daemon
+# Extract credentials (creates ~/.wa-mini/accounts/+15559876543.acc)
+./tools/extract_credentials.py --adb --phone +15559876543
+
+# Tell daemon to load the new account
+echo "RELOAD" | nc -U ~/.wa-mini/control.sock
 ```
 
 If running as a system service with a different data directory:
 
 ```sh
-# Register locally, then copy to service
-wa-mini register +15559876543
-wa-mini verify -a +15559876543 654321
-sudo cp -r ~/.wa-mini/* /var/lib/wa-mini/
-sudo chown -R _wamini:_wamini /var/lib/wa-mini
+# Extract locally, then copy to service
+./tools/extract_credentials.py --adb --phone +15559876543
+sudo cp ~/.wa-mini/accounts/+15559876543.acc /var/lib/wa-mini/accounts/
+sudo chown _wamini:_wamini /var/lib/wa-mini/accounts/+15559876543.acc
 echo "RELOAD" | nc -U /var/lib/wa-mini/control.sock
 ```
 
@@ -340,10 +343,8 @@ The daemon provides a Unix socket interface for live management without restarts
 | `PING` | - | Health check |
 | `LIST` | - | List running accounts with status |
 | `STATUS` | phone | Get account connection status |
-| `REGISTER` | phone [method] | Request SMS verification code |
-| `VERIFY` | phone code | Verify code, save account, start process |
 | `LOGOUT` | phone | Stop process and delete account |
-| `RELOAD` | - | Rescan database for new accounts |
+| `RELOAD` | - | Rescan accounts directory for new accounts |
 | `STOP` | - | Graceful daemon shutdown |
 
 ### Response Format
@@ -460,7 +461,7 @@ Crashes are uploaded as artifacts for investigation.
 ## Migration from SQLite
 
 If you're upgrading from a version that used SQLite storage (`credentials.db`),
-you'll need to re-register your accounts. The new flat file format stores each
+you'll need to re-import your accounts. The new flat file format stores each
 account as a separate binary file in `~/.wa-mini/accounts/`.
 
 ```sh
@@ -470,9 +471,8 @@ cp -r ~/.wa-mini ~/.wa-mini.bak
 # Remove old database
 rm ~/.wa-mini/credentials.db*
 
-# Re-register accounts
-wa-mini register +15551234567
-wa-mini verify -a +15551234567 <code>
+# Re-import accounts from Android
+./tools/extract_credentials.py --adb --phone +15551234567
 ```
 
 ## License
