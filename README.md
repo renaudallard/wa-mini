@@ -64,8 +64,69 @@ wa-mini daemon
 
 ## Registration
 
-WhatsApp uses anti-bot protection for new device registration. The registration
-API requires an HMAC-SHA1 token computed from:
+**WARNING: As of 2025, WhatsApp registration requires Android Keystore
+Attestation. See "Current Limitations" below.**
+
+### Current Limitations (2025)
+
+Research conducted via Frida dynamic instrumentation on WhatsApp 2.26.x revealed
+that WhatsApp has fundamentally changed its registration security model.
+
+#### Android Keystore Attestation Required
+
+WhatsApp's `/v2/code` registration endpoint now requires an `Authorization`
+header containing an X.509 certificate chain that proves:
+
+1. **Device Authenticity** - Request originates from a genuine Android device
+2. **APK Integrity** - WhatsApp APK has the correct signature (`04f8678c`)
+3. **Hardware-Backed Key** - A cryptographic challenge was signed by a key
+   generated in the Android Keystore (hardware or TEE-backed)
+
+The certificate chain structure:
+```
+Root:         Android Keystore Software Attestation Root (Google, Inc.)
+Intermediate: Android Keystore Software Attestation Intermediate
+Leaf:         Android Keystore Key (contains attestation extension)
+```
+
+The attestation extension (OID 1.3.6.1.4.1.11129.2.1.17) includes:
+- Package name: `com.whatsapp`
+- APK signature digest
+- Challenge-response proof
+- Device security level (software/TEE/strongbox)
+
+#### What This Means
+
+The traditional HMAC-SHA1 token (computed from `KEY + SIGNATURE + MD5_CLASSES +
+phone`) is **no longer sufficient** for registration. Even with the correct
+token, requests are rejected without valid Android Keystore attestation.
+
+**This attestation cannot be faked from a non-Android client** because:
+- The certificate chain is verified against Google's root certificates
+- The attestation proves keys were generated on-device
+- The challenge-response binds the attestation to the specific request
+
+#### Viable Alternatives
+
+1. **Register on Real Android, Export Credentials**
+   - Install WhatsApp on an Android device/emulator
+   - Complete registration normally
+   - Export the account credentials for use with wa-mini
+   - Use wa-mini only for the messaging protocol (post-registration)
+
+2. **Use Companion Device Pairing**
+   - Register on a real phone
+   - Use wa-mini as a linked companion device
+   - Requires keeping the primary phone active
+
+3. **Already-Registered Accounts**
+   - If you have existing WhatsApp credentials from before 2025
+   - These may continue working for the messaging protocol
+   - Re-registration would require Android attestation
+
+### Historical: HMAC Token (Pre-2025)
+
+For reference, WhatsApp previously used anti-bot protection via HMAC tokens:
 
 - **WA_SIGNATURE**: WhatsApp APK signing certificate (fixed, known)
 - **WA_MD5_CLASSES**: Base64(MD5(classes.dex)) - changes per version
@@ -75,123 +136,36 @@ API requires an HMAC-SHA1 token computed from:
 Token = Base64(HMAC-SHA1(KEY, SIGNATURE + MD5_CLASSES + phone))
 ```
 
-### Extracting the HMAC Key
+The code in `src/register.c` still implements this token generation, but it
+alone is no longer accepted by WhatsApp's servers.
 
-The 80-byte HMAC key is stored inside WhatsApp's native library in a proprietary
-compressed format (Facebook's Openbox/SuperPack compression). The key must be
-extracted after WhatsApp decompresses it at runtime.
+### Research Methodology
 
-#### Method: Rooted Android VM (Recommended)
+The attestation requirement was discovered through:
 
-Use a rooted Android emulator or VM to let WhatsApp decompress its libraries,
-then extract and analyze them.
+1. **Frida SSL Interception** - Hooking `SSL_write` in `libssl.so` to capture
+   HTTP request bodies before encryption
+2. **Traffic Analysis** - Examining `/v2/code` POST requests
+3. **Certificate Decoding** - Parsing the Authorization header to identify
+   Android Keystore attestation certificates
 
-**Step 1: Set up Android VM with root**
-
-Use Android-x86, Android Studio emulator (without Google Play), or similar:
-
-```sh
-# For Android Studio emulator (use Google APIs image, NOT Google Play)
-sdkmanager "system-images;android-28;google_apis;x86_64"
-avdmanager create avd -n whatsapp_extract -k "system-images;android-28;google_apis;x86_64"
-emulator -avd whatsapp_extract &
-
-# Or use Android-x86 in a VM (VirtualBox, QEMU, etc.)
+Captured request structure:
 ```
+POST /v2/code HTTP/1.1
+Authorization: MIICiz... [Base64 X.509 certificate chain]
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 5550
 
-**Step 2: Connect via ADB**
-
-```sh
-# For emulator
-adb connect localhost:5555
-
-# For Android-x86 VM (enable ADB in Developer Settings first)
-adb connect <VM_IP>:5555
-
-# Verify connection
-adb devices
-```
-
-**Step 3: Install and launch WhatsApp**
-
-```sh
-# Install WhatsApp APK
-adb install WhatsApp.apk
-
-# Launch it (this triggers decompression of native libraries)
-adb shell am start -n com.whatsapp/.Main
-
-# Wait a few seconds for initialization
-sleep 5
-```
-
-**Step 4: Extract decompressed data**
-
-```sh
-# Enter root shell and copy app data
-adb shell
-su
-cp -r /data/data/com.whatsapp /sdcard/wa_data
-exit
-exit
-
-# Pull to your machine
-adb pull /sdcard/wa_data ./wa_extracted
-
-# Find decompressed libraries
-find ./wa_extracted -name "*.so" -exec ls -lh {} \;
-```
-
-**Step 5: Analyze for HMAC key**
-
-```sh
-# Search for key patterns in extracted data
-strings ./wa_extracted/**/*.so 2>/dev/null | grep -i hmac
-./tools/extract_key.py ./wa_extracted/
-
-# Or analyze the decompressed native library directly
-# The key is 80 bytes, often near HMAC-related code
-```
-
-#### Alternative: Static Analysis
-
-If VM extraction isn't possible, try static analysis (may not work due to
-Openbox compression):
-
-```sh
-./tools/extract_key.py WhatsApp.apk --all
-```
-
-**Note**: Static analysis often fails because the key is in an Openbox-compressed
-section. The VM method lets WhatsApp's own decompressor handle this.
-
-### Updating src/register.c
-
-Once you have the key:
-
-```sh
-# 1. Calculate MD5_CLASSES
-unzip -p WhatsApp.apk classes.dex | md5sum | xxd -r -p | base64
-
-# 2. Update src/register.c with:
-#define WA_MD5_CLASSES "YOUR_MD5_CLASSES_HERE"
-#define WA_KEY "YOUR_80_BYTE_KEY_BASE64_HERE"
-#define WA_VERSION "2.xx.x.xx"  # From APK
-
-# 3. Rebuild
-make clean && make
-
-# 4. Test (should not return "bad_token")
-./wa-mini register +1234567890
+[body with phone, method, token, and other parameters]
 ```
 
 ### Troubleshooting Registration
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `bad_token` | Wrong HMAC key | Extract key using Frida runtime method |
+| `bad_token` | Missing/invalid attestation | Cannot be fixed without Android device |
 | `bad_param` | Malformed request | Check URL encoding of parameters |
-| `old_version` | WhatsApp version outdated | Update to newer APK and re-extract key |
+| `old_version` | WhatsApp version outdated | Update WA_VERSION in register.c |
 | `blocked` | Too many attempts | Wait and try again later |
 
 ## CLI Commands
