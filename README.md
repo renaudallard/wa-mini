@@ -144,8 +144,10 @@ The `keystore.xml` file contains:
 - `server_static_public` - WhatsApp server's Noise public key (plaintext)
 
 **Note:** In newer WhatsApp versions, the Noise keypair is encrypted with
-device-specific keys. If extraction fails, wa-mini can generate a fresh Noise
-keypair - WhatsApp servers accept new Noise keys for existing accounts.
+device-specific keys and cannot be extracted. The extraction tool automatically
+generates a fresh Noise keypair for each extraction - WhatsApp servers accept
+new Noise keys for existing accounts. The `server_static_public` key is still
+extracted from `keystore.xml` if available.
 
 ### wa-mini Account File Format
 

@@ -26,6 +26,83 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+
+def generate_noise_keypair():
+    """Generate a fresh X25519 keypair for Noise protocol."""
+    private_key = X25519PrivateKey.generate()
+    private_bytes = private_key.private_bytes_raw()
+    public_bytes = private_key.public_key().public_bytes_raw()
+    return private_bytes, public_bytes
+
+
+def parse_protobuf_signed_prekey(data):
+    """
+    Parse Signal signed prekey protobuf record.
+
+    Structure:
+      field 1 (varint): prekey ID
+      field 2 (bytes): public key (33 bytes with 0x05 prefix)
+      field 3 (bytes): private key (32 bytes)
+      field 4 (bytes): signature (64 bytes)
+    """
+    result = {}
+    pos = 0
+
+    while pos < len(data):
+        if pos >= len(data):
+            break
+
+        # Read field tag (varint)
+        tag_byte = data[pos]
+        field_num = tag_byte >> 3
+        wire_type = tag_byte & 0x07
+        pos += 1
+
+        if wire_type == 0:  # Varint
+            value = 0
+            shift = 0
+            while pos < len(data):
+                b = data[pos]
+                pos += 1
+                value |= (b & 0x7f) << shift
+                if (b & 0x80) == 0:
+                    break
+                shift += 7
+            if field_num == 1:
+                result["id"] = value
+
+        elif wire_type == 2:  # Length-delimited
+            length = 0
+            shift = 0
+            while pos < len(data):
+                b = data[pos]
+                pos += 1
+                length |= (b & 0x7f) << shift
+                if (b & 0x80) == 0:
+                    break
+                shift += 7
+
+            if pos + length > len(data):
+                break
+
+            field_data = data[pos:pos + length]
+            pos += length
+
+            if field_num == 2:  # Public key (33 bytes with 0x05 prefix)
+                result["public"] = field_data
+            elif field_num == 3:  # Private key (32 bytes)
+                result["private"] = field_data
+            elif field_num == 4:  # Signature (64 bytes)
+                result["signature"] = field_data
+
+        else:
+            # Unknown wire type, skip
+            break
+
+    return result
+
 
 def run_adb(args, check=True):
     """Run adb command and return output."""
@@ -135,6 +212,11 @@ def parse_axolotl_db(db_path):
                     if pub_col in cols:
                         result["identity_key_public"] = row[cols[pub_col]]
                         break
+                # Registration ID is often in the identities table
+                for reg_col in ["registration_id", "regid", "reg_id"]:
+                    if reg_col in cols:
+                        result["registration_id"] = row[cols[reg_col]]
+                        break
             break
 
     # Signed prekeys
@@ -149,6 +231,7 @@ def parse_axolotl_db(db_path):
             cursor.execute(f"SELECT * FROM {table} ORDER BY rowid DESC LIMIT 1")
             row = cursor.fetchone()
             if row:
+                # First try direct columns
                 for priv_col in ["private_key", "privatekey", "key_private", "private"]:
                     if priv_col in cols:
                         result["signed_prekey_private"] = row[cols[priv_col]]
@@ -165,6 +248,23 @@ def parse_axolotl_db(db_path):
                     if id_col in cols:
                         result["signed_prekey_id"] = row[cols[id_col]]
                         break
+
+                # If not found, try parsing protobuf record
+                if not result["signed_prekey_private"] and "record" in cols:
+                    record = row[cols["record"]]
+                    if isinstance(record, bytes):
+                        print("[*] Parsing signed prekey protobuf record...")
+                        parsed = parse_protobuf_signed_prekey(record)
+                        if parsed.get("private"):
+                            result["signed_prekey_private"] = parsed["private"]
+                            print(f"[+] Found signed prekey private ({len(parsed['private'])} bytes)")
+                        if parsed.get("public"):
+                            result["signed_prekey_public"] = parsed["public"]
+                        if parsed.get("signature"):
+                            result["signed_prekey_signature"] = parsed["signature"]
+                            print(f"[+] Found signed prekey signature ({len(parsed['signature'])} bytes)")
+                        if parsed.get("id") and not result["signed_prekey_id"]:
+                            result["signed_prekey_id"] = parsed["id"]
             break
 
     # Registration ID - might be in a separate table or with identity
@@ -219,7 +319,9 @@ def parse_keystore_xml(xml_path):
 
             elif "server_static" in name:
                 try:
-                    result["server_public"] = base64.b64decode(value)
+                    # Add base64 padding if needed
+                    padded = value + '=' * (-len(value) % 4)
+                    result["server_public"] = base64.b64decode(padded)
                     print("[+] Found server static public key")
                 except Exception:
                     pass
@@ -242,7 +344,10 @@ def parse_keystore_xml(xml_path):
         match = re.search(pattern, content)
         if match and result.get(key) is None:
             try:
-                data = base64.b64decode(match.group(1))
+                # Add base64 padding if needed
+                b64_value = match.group(1)
+                padded = b64_value + '=' * (-len(b64_value) % 4)
+                data = base64.b64decode(padded)
                 if key == "noise_keypair" and len(data) == 64:
                     result["noise_private"] = data[:32]
                     result["noise_public"] = data[32:]
@@ -252,6 +357,13 @@ def parse_keystore_xml(xml_path):
                 pass
 
     return result
+
+
+def strip_key_prefix(key_bytes):
+    """Strip 0x05 DJB type prefix from Curve25519 public key if present."""
+    if isinstance(key_bytes, bytes) and len(key_bytes) == 33 and key_bytes[0] == 0x05:
+        return key_bytes[1:]
+    return key_bytes
 
 
 def create_acc_file(phone, identity_priv, identity_pub, signed_prekey_priv,
@@ -269,6 +381,9 @@ def create_acc_file(phone, identity_priv, identity_pub, signed_prekey_priv,
     # Phone number (null-padded, max 19 chars + null)
     phone_bytes = phone.encode('utf-8')[:19]
     buf[8:8+len(phone_bytes)] = phone_bytes
+
+    # Strip 0x05 type prefix from public keys if present
+    identity_pub = strip_key_prefix(identity_pub)
 
     # Identity keypair (32 + 32 bytes)
     if isinstance(identity_priv, bytes) and len(identity_priv) >= 32:
@@ -397,6 +512,13 @@ def process_files(axolotl_path, keystore_path, phone, output_path):
     if not phone and keystore_data.get("phone"):
         phone = keystore_data["phone"]
 
+    # Always generate fresh Noise keypair
+    # WhatsApp servers accept new Noise keys for existing accounts, and the
+    # encrypted Noise keys in newer WhatsApp versions can't be decrypted anyway
+    print("\n[*] Generating fresh Noise keypair...")
+    noise_priv, noise_pub = generate_noise_keypair()
+    print(f"[+] Generated Noise keypair: {noise_pub[:8].hex()}...")
+
     # Summary
     print("\n=== Extracted Credentials ===")
     print_key_summary("Identity Private", axolotl_data.get("identity_key_private"))
@@ -406,12 +528,12 @@ def process_files(axolotl_path, keystore_path, phone, output_path):
     print_key_summary("Signed Prekey Signature", axolotl_data.get("signed_prekey_signature"))
     print_key_summary("Signed Prekey ID", axolotl_data.get("signed_prekey_id"))
     print_key_summary("Registration ID", axolotl_data.get("registration_id"))
-    print_key_summary("Noise Private", keystore_data.get("noise_private"))
-    print_key_summary("Noise Public", keystore_data.get("noise_public"))
+    print_key_summary("Noise Private", noise_priv)
+    print_key_summary("Noise Public", noise_pub)
     print_key_summary("Server Public", keystore_data.get("server_public"))
     print_key_summary("Phone", phone)
 
-    # Check for missing required fields
+    # Check for missing required fields (Noise keys no longer needed from keystore)
     missing = []
     if not axolotl_data.get("identity_key_private"):
         missing.append("identity_key_private")
@@ -419,8 +541,6 @@ def process_files(axolotl_path, keystore_path, phone, output_path):
         missing.append("identity_key_public")
     if not axolotl_data.get("signed_prekey_private"):
         missing.append("signed_prekey_private")
-    if not keystore_data.get("noise_private"):
-        missing.append("noise_private")
     if not phone:
         missing.append("phone")
 
@@ -445,8 +565,8 @@ def process_files(axolotl_path, keystore_path, phone, output_path):
         signed_prekey_sig=axolotl_data.get("signed_prekey_signature", b'\x00' * 64),
         signed_prekey_id=axolotl_data.get("signed_prekey_id", 1),
         registration_id=axolotl_data.get("registration_id", 1),
-        noise_priv=keystore_data.get("noise_private"),
-        noise_pub=keystore_data.get("noise_public"),
+        noise_priv=noise_priv,
+        noise_pub=noise_pub,
         server_pub=keystore_data.get("server_public", b'\x00' * 32),
     )
 
