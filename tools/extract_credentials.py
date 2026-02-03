@@ -551,12 +551,19 @@ def process_files(axolotl_path, keystore_path, phone, output_path):
         return
 
     if not output_path:
-        # Default output name
-        safe_phone = phone.replace("+", "").replace(" ", "")
-        output_path = f"{safe_phone}.acc"
+        # Default to wa-mini accounts directory
+        wa_mini_dir = os.path.expanduser("~/.wa-mini/accounts")
+        os.makedirs(wa_mini_dir, exist_ok=True)
+        output_path = os.path.join(wa_mini_dir, f"{phone}.acc")
 
     # Create .acc file
     print(f"\n[*] Creating {output_path}...")
+
+    # Ensure parent directory exists
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
     acc_data = create_acc_file(
         phone=phone,
         identity_priv=axolotl_data.get("identity_key_private"),
@@ -574,8 +581,6 @@ def process_files(axolotl_path, keystore_path, phone, output_path):
         f.write(acc_data)
 
     print(f"[+] Created {output_path} ({len(acc_data)} bytes)")
-    print("\n[*] Copy to wa-mini accounts directory:")
-    print(f"    cp {output_path} ~/.wa-mini/accounts/{phone}.acc")
 
 
 if __name__ == "__main__":
