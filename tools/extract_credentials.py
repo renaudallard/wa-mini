@@ -4,7 +4,10 @@ Extract WhatsApp credentials from rooted Android device and convert to wa-mini .
 
 Usage:
     # Pull and convert in one step
-    ./extract_credentials.py --adb --phone +15551234567 -o account.acc
+    ./extract_credentials.py --adb --phone +15551234567
+
+    # With multiple devices, specify which one
+    ./extract_credentials.py --adb -s emulator-5554 --phone +15551234567
 
     # Or from already-extracted files
     ./extract_credentials.py --axolotl axolotl.db --keystore keystore.xml --phone +15551234567
@@ -104,9 +107,14 @@ def parse_protobuf_signed_prekey(data):
     return result
 
 
+_adb_device = None
+
 def run_adb(args, check=True):
     """Run adb command and return output."""
-    cmd = ["adb"] + args
+    cmd = ["adb"]
+    if _adb_device:
+        cmd.extend(["-s", _adb_device])
+    cmd.extend(args)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if check and result.returncode != 0:
         print(f"adb error: {result.stderr}", file=sys.stderr)
@@ -446,6 +454,8 @@ def main():
     )
     parser.add_argument("--adb", action="store_true",
                         help="Pull files from connected Android device via ADB")
+    parser.add_argument("--device", "-s", type=str,
+                        help="ADB device serial (use 'adb devices' to list)")
     parser.add_argument("--axolotl", type=str,
                         help="Path to axolotl.db file")
     parser.add_argument("--keystore", type=str,
@@ -463,6 +473,11 @@ def main():
     if args.dump:
         dump_database(args.dump)
         return
+
+    # Set ADB device if specified
+    global _adb_device
+    if args.device:
+        _adb_device = args.device
 
     # Need either --adb or manual file paths
     if not args.adb and not (args.axolotl or args.keystore):
