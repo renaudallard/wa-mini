@@ -48,9 +48,9 @@ int crypto_sha256(const uint8_t *data, size_t len, uint8_t *hash)
 }
 
 /* HMAC-SHA256 */
-int crypto_hmac_sha256(const uint8_t *key, size_t key_len,
-                       const uint8_t *data, size_t data_len,
-                       uint8_t *mac)
+static int crypto_hmac_sha256(const uint8_t *key, size_t key_len,
+                              const uint8_t *data, size_t data_len,
+                              uint8_t *mac)
 {
     crypto_auth_hmacsha256_state state;
 
@@ -64,9 +64,9 @@ int crypto_hmac_sha256(const uint8_t *key, size_t key_len,
 }
 
 /* HKDF-SHA256 extract */
-int crypto_hkdf_extract(const uint8_t *salt, size_t salt_len,
-                        const uint8_t *ikm, size_t ikm_len,
-                        uint8_t *prk)
+static int crypto_hkdf_extract(const uint8_t *salt, size_t salt_len,
+                               const uint8_t *ikm, size_t ikm_len,
+                               uint8_t *prk)
 {
     if (salt == NULL || salt_len == 0) {
         uint8_t zero_salt[32] = {0};
@@ -76,9 +76,9 @@ int crypto_hkdf_extract(const uint8_t *salt, size_t salt_len,
 }
 
 /* HKDF-SHA256 expand */
-int crypto_hkdf_expand(const uint8_t *prk, size_t prk_len,
-                       const uint8_t *info, size_t info_len,
-                       uint8_t *okm, size_t okm_len)
+static int crypto_hkdf_expand(const uint8_t *prk, size_t prk_len,
+                              const uint8_t *info, size_t info_len,
+                              uint8_t *okm, size_t okm_len)
 {
     uint8_t t[32] = {0};
     uint8_t counter = 1;

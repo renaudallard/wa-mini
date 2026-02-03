@@ -226,7 +226,7 @@ static int handle_list(int client_fd, daemon_ctx_t *ctx)
             ctx->children[i].phone, ctx->children[i].pid, status_str);
     }
 
-    offset += snprintf(json + offset, sizeof(json) - offset, "]}");
+    snprintf(json + offset, sizeof(json) - offset, "]}");
 
     return send_ok(client_fd, json);
 }

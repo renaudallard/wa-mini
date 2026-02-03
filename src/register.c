@@ -1053,7 +1053,7 @@ static xmpp_node_t *build_register_keys(const wa_account_t *account)
 /*
  * Initialize registration context
  */
-int wa_register_init(reg_ctx_t *reg, const char *phone, const char *method)
+static int wa_register_init(reg_ctx_t *reg, const char *phone, const char *method)
 {
     memset(reg, 0, sizeof(*reg));
 
@@ -1104,7 +1104,7 @@ int wa_register_init(reg_ctx_t *reg, const char *phone, const char *method)
  * Start registration process (request verification code)
  * Sends HTTP request to WhatsApp registration API
  */
-int wa_register_request_code(void *ctx_ptr, reg_ctx_t *reg)
+static int wa_register_request_code(void *ctx_ptr, reg_ctx_t *reg)
 {
     (void)ctx_ptr;
 
@@ -1232,7 +1232,7 @@ int wa_register_request_code(void *ctx_ptr, reg_ctx_t *reg)
  * Submit verification code
  * Sends HTTP request to WhatsApp registration API to verify the code
  */
-int wa_register_submit_code(void *ctx_ptr, reg_ctx_t *reg, const char *code)
+static int wa_register_submit_code(void *ctx_ptr, reg_ctx_t *reg, const char *code)
 {
     (void)ctx_ptr;
 
@@ -1341,7 +1341,7 @@ int wa_register_submit_code(void *ctx_ptr, reg_ctx_t *reg, const char *code)
 /*
  * Complete registration by uploading Signal keys
  */
-int wa_register_upload_keys(void *ctx_ptr, reg_ctx_t *reg, wa_account_t *account)
+static int wa_register_upload_keys(void *ctx_ptr, reg_ctx_t *reg, wa_account_t *account)
 {
     if (reg->state != REG_STATE_VERIFIED) {
         strncpy(reg->error_reason, "Account not verified yet",
@@ -1403,7 +1403,7 @@ reg_state_t wa_register_get_state(const reg_ctx_t *reg)
 /*
  * Get error reason
  */
-const char *wa_register_get_error(const reg_ctx_t *reg)
+static const char *wa_register_get_error(const reg_ctx_t *reg)
 {
     return reg->error_reason;
 }

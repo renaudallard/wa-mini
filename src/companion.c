@@ -84,7 +84,7 @@ static void generate_ref(char *ref, size_t size)
 /*
  * Initialize link context
  */
-int link_ctx_init(link_ctx_t *ctx)
+static int link_ctx_init(link_ctx_t *ctx)
 {
     sodium_memzero(ctx, sizeof(*ctx));
 
@@ -114,7 +114,7 @@ int link_ctx_init(link_ctx_t *ctx)
 /*
  * Get formatted link code (XXXX-XXXX)
  */
-void link_get_formatted_code(const link_ctx_t *ctx, char *out, size_t size)
+static void link_get_formatted_code(const link_ctx_t *ctx, char *out, size_t size)
 {
     if (size >= 10) {
         snprintf(out, size, "%.4s-%.4s", ctx->code, ctx->code + 4);

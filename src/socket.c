@@ -47,15 +47,6 @@ typedef struct {
     time_t last_reconnect;
     int reconnect_delay_ms;
 
-    /* Buffer for partial reads */
-    uint8_t read_buf[65536];
-    size_t read_buf_len;
-    size_t read_buf_pos;
-
-    /* Buffer for partial writes */
-    uint8_t write_buf[65536];
-    size_t write_buf_len;
-    size_t write_buf_pos;
 } wa_socket_t;
 
 /* Set socket non-blocking */
@@ -223,10 +214,6 @@ void wa_socket_disconnect(wa_socket_t *sock)
         sock->fd = -1;
     }
     sock->connected = 0;
-    sock->read_buf_len = 0;
-    sock->read_buf_pos = 0;
-    sock->write_buf_len = 0;
-    sock->write_buf_pos = 0;
 }
 
 /* Check if connected */
@@ -272,7 +259,7 @@ int wa_socket_write(wa_socket_t *sock, const uint8_t *data, size_t len)
 }
 
 /* Read data with timeout */
-int wa_socket_read(wa_socket_t *sock, uint8_t *data, size_t len, int timeout_ms)
+static int wa_socket_read(wa_socket_t *sock, uint8_t *data, size_t len, int timeout_ms)
 {
     if (!sock->connected) return -1;
 
@@ -322,7 +309,7 @@ int wa_socket_read(wa_socket_t *sock, uint8_t *data, size_t len, int timeout_ms)
 }
 
 /* Read exact number of bytes */
-int wa_socket_read_exact(wa_socket_t *sock, uint8_t *data, size_t len, int timeout_ms)
+static int wa_socket_read_exact(wa_socket_t *sock, uint8_t *data, size_t len, int timeout_ms)
 {
     size_t total = 0;
     time_t start = time(NULL);

@@ -43,7 +43,7 @@ typedef struct {
  * Generate a random registration ID
  * This is a 4-byte value used in Signal protocol
  */
-uint32_t signal_generate_registration_id(void)
+static uint32_t signal_generate_registration_id(void)
 {
     /* Registration ID should be between 1 and 16380 per Signal spec */
     /* randombytes_uniform uses rejection sampling to avoid modulo bias */
@@ -54,7 +54,7 @@ uint32_t signal_generate_registration_id(void)
  * Generate Signal identity keypair
  * Uses Curve25519 for the identity key
  */
-int signal_generate_identity_key(uint8_t *priv, uint8_t *pub)
+static int signal_generate_identity_key(uint8_t *priv, uint8_t *pub)
 {
     return crypto_keypair_generate(priv, pub);
 }
@@ -86,10 +86,10 @@ static int xeddsa_sign(const uint8_t *priv, const uint8_t *msg, size_t msg_len,
  * Generate a signed prekey
  * The signed prekey is a medium-term key signed by the identity key
  */
-int signal_generate_signed_prekey(const uint8_t *identity_priv,
-                                  uint32_t key_id,
-                                  uint8_t *priv, uint8_t *pub,
-                                  uint8_t *signature)
+static int signal_generate_signed_prekey(const uint8_t *identity_priv,
+                                         uint32_t key_id,
+                                         uint8_t *priv, uint8_t *pub,
+                                         uint8_t *signature)
 {
     /* Generate prekey keypair */
     if (crypto_keypair_generate(priv, pub) != 0) {
@@ -129,7 +129,7 @@ int signal_generate_prekeys(signal_prekey_t *prekeys, int count, uint32_t start_
 /*
  * Generate complete Signal identity for a new account
  */
-int signal_generate_identity(signal_identity_t *identity)
+static int signal_generate_identity(signal_identity_t *identity)
 {
     sodium_memzero(identity, sizeof(*identity));
 
@@ -159,7 +159,7 @@ int signal_generate_identity(signal_identity_t *identity)
 /*
  * Clear sensitive data from identity structure
  */
-void signal_clear_identity(signal_identity_t *identity)
+static void signal_clear_identity(signal_identity_t *identity)
 {
     sodium_memzero(identity, sizeof(*identity));
 }
