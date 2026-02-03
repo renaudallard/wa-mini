@@ -23,22 +23,22 @@ extract the credentials.
 
 ```sh
 # Install dependencies (Debian/Ubuntu)
-sudo apt install build-essential libsodium-dev
+sudo apt install build-essential libsodium-dev libssl-dev
 
 # Fedora/RHEL
-sudo dnf install gcc make libsodium-devel
+sudo dnf install gcc make libsodium-devel openssl-devel
 
 # Alpine Linux
-sudo apk add build-base libsodium-dev
+sudo apk add build-base libsodium-dev openssl-dev
 
 # OpenBSD
 doas pkg_add libsodium
 
 # FreeBSD
-sudo pkg install libsodium
+sudo pkg install libsodium openssl
 
 # macOS
-brew install libsodium
+brew install libsodium openssl
 
 # Compile
 make
@@ -246,7 +246,8 @@ wa-mini
 
 ## Dependencies
 
-- **libsodium** - Cryptography (Curve25519, AES-GCM, SHA-256)
+- **libsodium** - Cryptography (Curve25519, SHA-256, HMAC)
+- **OpenSSL** - AES-256-GCM (software implementation for ARM/non-AES-NI systems)
 
 ## Setup Guide
 

@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include <sodium.h>
+#include <openssl/evp.h>
 #include "noise.h"
 
 /* Initialize libsodium */
@@ -133,60 +134,118 @@ int crypto_hkdf(const uint8_t *salt, size_t salt_len,
     return ret;
 }
 
-/* AES-256-GCM encrypt */
+/* AES-256-GCM encrypt using OpenSSL (works on systems without AES-NI) */
 int crypto_aes_gcm_encrypt(const uint8_t *key,
                            const uint8_t *nonce, size_t nonce_len,
                            const uint8_t *aad, size_t aad_len,
                            const uint8_t *plaintext, size_t plaintext_len,
                            uint8_t *ciphertext, uint8_t *tag)
 {
-    /* libsodium AES-GCM uses 12-byte nonce */
     if (nonce_len != 12) {
         return -1;
     }
 
-    unsigned long long ciphertext_len;
-
-    /* Combined encryption */
-    if (crypto_aead_aes256gcm_encrypt(
-            ciphertext, &ciphertext_len,
-            plaintext, plaintext_len,
-            aad, aad_len,
-            NULL, nonce, key) != 0) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
         return -1;
     }
 
-    /* Extract tag from end of ciphertext */
-    if (tag != NULL && ciphertext_len >= 16) {
-        memcpy(tag, ciphertext + plaintext_len, 16);
+    int ret = -1;
+    int len;
+
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
+        goto cleanup;
     }
 
-    return 0;
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)nonce_len, NULL) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce) != 1) {
+        goto cleanup;
+    }
+
+    if (aad != NULL && aad_len > 0) {
+        if (EVP_EncryptUpdate(ctx, NULL, &len, aad, (int)aad_len) != 1) {
+            goto cleanup;
+        }
+    }
+
+    if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, (int)plaintext_len) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag) != 1) {
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    EVP_CIPHER_CTX_free(ctx);
+    return ret;
 }
 
-/* AES-256-GCM decrypt */
+/* AES-256-GCM decrypt using OpenSSL (works on systems without AES-NI) */
 int crypto_aes_gcm_decrypt(const uint8_t *key,
                            const uint8_t *nonce, size_t nonce_len,
                            const uint8_t *aad, size_t aad_len,
                            const uint8_t *ciphertext, size_t ciphertext_len,
                            uint8_t *plaintext)
 {
-    if (nonce_len != 12) {
+    if (nonce_len != 12 || ciphertext_len < 16) {
         return -1;
     }
 
-    unsigned long long plaintext_len;
-
-    if (crypto_aead_aes256gcm_decrypt(
-            plaintext, &plaintext_len,
-            NULL,
-            ciphertext, ciphertext_len,
-            aad, aad_len,
-            nonce, key) != 0) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
         return -1;
     }
 
-    return 0;
+    int ret = -1;
+    int len;
+    size_t data_len = ciphertext_len - 16;  /* Subtract tag */
+    const uint8_t *tag = ciphertext + data_len;
+
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)nonce_len, NULL) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, key, nonce) != 1) {
+        goto cleanup;
+    }
+
+    if (aad != NULL && aad_len > 0) {
+        if (EVP_DecryptUpdate(ctx, NULL, &len, aad, (int)aad_len) != 1) {
+            goto cleanup;
+        }
+    }
+
+    if (EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, (int)data_len) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_DecryptFinal_ex(ctx, plaintext + len, &len) != 1) {
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    EVP_CIPHER_CTX_free(ctx);
+    return ret;
 }
 
 /* Ed25519 sign */

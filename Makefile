@@ -7,7 +7,7 @@
 # Compiler and flags
 CC ?= cc
 CFLAGS = -Wall -Wextra -Werror -pedantic -std=c11 -O2 -I./include
-LDFLAGS = -lsodium -lm
+LDFLAGS = -lsodium -lcrypto -lm
 
 # Debug build
 ifdef DEBUG
