@@ -78,86 +78,92 @@ Token = Base64(HMAC-SHA1(KEY, SIGNATURE + MD5_CLASSES + phone))
 ### Extracting the HMAC Key
 
 The 80-byte HMAC key is stored inside WhatsApp's native library in a proprietary
-compressed format (Facebook's Openbox/ANS compression). There are two methods
-to extract it:
+compressed format (Facebook's Openbox/SuperPack compression). The key must be
+extracted after WhatsApp decompresses it at runtime.
 
-#### Method 1: Frida Runtime Extraction (Recommended)
+#### Method: Rooted Android VM (Recommended)
 
-This method captures the key at runtime when WhatsApp uses it. Works on both
-rooted devices and non-rooted devices (with APK patching).
+Use a rooted Android emulator or VM to let WhatsApp decompress its libraries,
+then extract and analyze them.
 
-**Option A: Rooted Device/Emulator**
+**Step 1: Set up Android VM with root**
+
+Use Android-x86, Android Studio emulator (without Google Play), or similar:
 
 ```sh
-# 1. Install Frida tools
-pip install frida-tools
+# For Android Studio emulator (use Google APIs image, NOT Google Play)
+sdkmanager "system-images;android-28;google_apis;x86_64"
+avdmanager create avd -n whatsapp_extract -k "system-images;android-28;google_apis;x86_64"
+emulator -avd whatsapp_extract &
 
-# 2. Download and start Frida server on device
-FRIDA_VERSION=$(frida --version)
-wget "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-arm64.xz"
-xz -d frida-server-*.xz && mv frida-server-* frida-server
+# Or use Android-x86 in a VM (VirtualBox, QEMU, etc.)
+```
 
-adb root
-adb push frida-server /data/local/tmp/
-adb shell "chmod 755 /data/local/tmp/frida-server"
-adb shell "/data/local/tmp/frida-server &"
+**Step 2: Connect via ADB**
 
-# 3. Install WhatsApp and run extraction
+```sh
+# For emulator
+adb connect localhost:5555
+
+# For Android-x86 VM (enable ADB in Developer Settings first)
+adb connect <VM_IP>:5555
+
+# Verify connection
+adb devices
+```
+
+**Step 3: Install and launch WhatsApp**
+
+```sh
+# Install WhatsApp APK
 adb install WhatsApp.apk
-frida -U -f com.whatsapp -l tools/frida_extract_key.js --no-pause
 
-# 4. In WhatsApp: Enter phone number, tap Next
-# The 80-byte HMAC key will be displayed
+# Launch it (this triggers decompression of native libraries)
+adb shell am start -n com.whatsapp/.Main
+
+# Wait a few seconds for initialization
+sleep 5
 ```
 
-**Option B: Non-Rooted Device (APK Patching)**
-
-Inject Frida Gadget into the APK to run without root:
+**Step 4: Extract decompressed data**
 
 ```sh
-# 1. Install requirements
-pip install frida-tools
-sudo apt install apktool zipalign apksigner
+# Enter root shell and copy app data
+adb shell
+su
+cp -r /data/data/com.whatsapp /sdcard/wa_data
+exit
+exit
 
-# 2. Patch the APK (automated script)
-./tools/patch_apk.sh /path/to/WhatsApp.apk arm64-v8a
+# Pull to your machine
+adb pull /sdcard/wa_data ./wa_extracted
 
-# Output: WhatsApp_patched.apk
-
-# 3. Install patched APK
-adb uninstall com.whatsapp  # Remove existing installation
-adb install WhatsApp_patched.apk
-
-# 4. Start WhatsApp on device (will wait for Frida to connect)
-
-# 5. Connect and extract key
-frida -U Gadget -l tools/frida_extract_key.js
-
-# 6. In WhatsApp: Enter phone number, tap Next
-# Key will be captured!
+# Find decompressed libraries
+find ./wa_extracted -name "*.so" -exec ls -lh {} \;
 ```
 
-The patching script:
-- Downloads Frida Gadget for your architecture
-- Decompiles the APK with apktool
-- Injects the gadget loader into the main activity
-- Rebuilds and signs the APK
-
-#### Method 2: Static Analysis (Fallback)
-
-If runtime extraction isn't possible, try static analysis:
+**Step 5: Analyze for HMAC key**
 
 ```sh
-# Extract key candidates from APK
-./tools/extract_key.py WhatsApp.apk
+# Search for key patterns in extracted data
+strings ./wa_extracted/**/*.so 2>/dev/null | grep -i hmac
+./tools/extract_key.py ./wa_extracted/
 
-# Show all candidates if the first one fails
+# Or analyze the decompressed native library directly
+# The key is 80 bytes, often near HMAC-related code
+```
+
+#### Alternative: Static Analysis
+
+If VM extraction isn't possible, try static analysis (may not work due to
+Openbox compression):
+
+```sh
 ./tools/extract_key.py WhatsApp.apk --all
 ```
 
-**Note**: Static analysis may not find the correct key because the key is stored
-in an Openbox-compressed section that requires WhatsApp's native decompressor.
-If registration fails with "bad_token", use Frida runtime extraction instead.
+**Note**: Static analysis often fails because the key is in an Openbox-compressed
+section. The VM method lets WhatsApp's own decompressor handle this.
 
 ### Updating src/register.c
 

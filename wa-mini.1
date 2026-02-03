@@ -145,47 +145,46 @@ The token is computed from three components:
 \- 80-byte HMAC key \- extracted from native library
 .SS Key Extraction
 The 80-byte HMAC key is stored in WhatsApp's native library using Facebook's
-proprietary Openbox compression. The recommended extraction method uses Frida
-to capture the key at runtime.
+proprietary Openbox/SuperPack compression. The key must be extracted after
+WhatsApp decompresses it at runtime.
 .PP
-.B Method 1: Frida with Rooted Device
+.B Method: Rooted Android VM (Recommended)
 .PP
-.nf
-# Start Frida server on rooted device
-adb shell "/data/local/tmp/frida-server &"
-
-# Run extraction
-frida -U -f com.whatsapp -l tools/frida_extract_key.js --no-pause
-
-# Enter phone number in WhatsApp and tap Next
-# Key will be displayed
-.fi
-.PP
-.B Method 2: Frida with APK Patching (No Root)
-.PP
-Inject Frida Gadget into the APK to run without root:
+Use a rooted Android emulator or VM to let WhatsApp decompress its libraries,
+then extract and analyze them.
 .PP
 .nf
-# Patch the APK
-./tools/patch_apk.sh WhatsApp.apk arm64-v8a
+# 1. Set up Android VM with root (Android-x86 or emulator)
+#    For emulator, use Google APIs image (NOT Google Play)
 
-# Install patched APK
-adb install WhatsApp_patched.apk
+# 2. Connect via ADB
+adb connect <VM_IP>:5555
 
-# Connect Frida (note: process name is "Gadget")
-frida -U Gadget -l tools/frida_extract_key.js
+# 3. Install and launch WhatsApp
+adb install WhatsApp.apk
+adb shell am start -n com.whatsapp/.Main
+sleep 5
 
-# Enter phone number in WhatsApp and tap Next
+# 4. Extract decompressed data (enter shell first)
+adb shell
+su
+cp -r /data/data/com.whatsapp /sdcard/wa_data
+exit
+exit
+
+# 5. Pull to host and analyze
+adb pull /sdcard/wa_data ./wa_extracted
+./tools/extract_key.py ./wa_extracted/
 .fi
 .PP
-.B Method 3: Static Analysis (Fallback)
+.B Alternative: Static Analysis (Fallback)
 .PP
 .nf
 ./tools/extract_key.py WhatsApp.apk --all
 .fi
 .PP
 Static analysis may not find the correct key due to the proprietary compression.
-Use Frida runtime extraction if registration fails with "bad_token".
+The VM method lets WhatsApp's own decompressor handle this.
 .SS Updating src/register.c
 .PP
 .nf
