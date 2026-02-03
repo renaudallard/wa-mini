@@ -80,10 +80,10 @@ static const char WA_SIGNATURE[] =
  * Empty string = token generation disabled (will fail with bad_token)
  *
  * Extracted from WhatsApp 2.26.4.71 libwhatsappmerged.so using Ghidra
- * Found at offset 0x4bc4e0 in decompressed SuperPack stream, near
+ * Found at offset 0x4bc4d6 in decompressed SuperPack stream, near
  * "hmac sha-1 authentication function" string.
  */
-#define WA_KEY "dCLnrTWF4vk36Bx1325H8RpxHSnFiW+3Yg6qGL4b/FY+S8bSeSCa28D+eM1a9B/dqDOIB8cxsRIQWSeA7F9gUX+pGbVKDS3lep+TyZzvoOA="
+#define WA_KEY "OixSCWrVMDalOL9Ao56B89f7fOM5gpsv/4c0jkNExN7py1R7lDKmwiM97kyVC0L6w04ILqFmKNkksnZboklti9Elcvj2ZIZomBbUpFzMXWU="
 
 #define WA_VERSION "2.26.4.71"
 #define WA_USER_AGENT "WhatsApp/2.26.4.71 Android/14 Device/Pixel_8_Pro"
@@ -435,21 +435,38 @@ static int generate_token(const char *phone, char *token, size_t token_size)
     hmac_sha1(key, 80, data, data_len, final_hash);
     free(data);
 
-    /* Base64 encode the result */
+    /* Base64 encode the result, then URL-encode for form data */
     static const char b64_alphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char temp[64];
     size_t j = 0;
-    for (size_t i = 0; i < 20 && j < token_size - 4; i += 3) {
+    for (size_t i = 0; i < 20 && j < sizeof(temp) - 4; i += 3) {
         uint32_t n = (uint32_t)final_hash[i] << 16;
         if (i + 1 < 20) n |= (uint32_t)final_hash[i + 1] << 8;
         if (i + 2 < 20) n |= (uint32_t)final_hash[i + 2];
 
-        token[j++] = b64_alphabet[(n >> 18) & 0x3F];
-        token[j++] = b64_alphabet[(n >> 12) & 0x3F];
-        token[j++] = (i + 1 < 20) ? b64_alphabet[(n >> 6) & 0x3F] : '=';
-        token[j++] = (i + 2 < 20) ? b64_alphabet[n & 0x3F] : '=';
+        temp[j++] = b64_alphabet[(n >> 18) & 0x3F];
+        temp[j++] = b64_alphabet[(n >> 12) & 0x3F];
+        temp[j++] = (i + 1 < 20) ? b64_alphabet[(n >> 6) & 0x3F] : '=';
+        temp[j++] = (i + 2 < 20) ? b64_alphabet[n & 0x3F] : '=';
     }
-    token[j] = '\0';
+    temp[j] = '\0';
+
+    /* URL-encode +, /, = for form data */
+    char *dst = token;
+    char *dst_end = token + token_size - 4;
+    for (const char *src = temp; *src && dst < dst_end; src++) {
+        if (*src == '+') {
+            *dst++ = '%'; *dst++ = '2'; *dst++ = 'B';
+        } else if (*src == '/') {
+            *dst++ = '%'; *dst++ = '2'; *dst++ = 'F';
+        } else if (*src == '=') {
+            *dst++ = '%'; *dst++ = '3'; *dst++ = 'D';
+        } else {
+            *dst++ = *src;
+        }
+    }
+    *dst = '\0';
 
     return 1;
 }

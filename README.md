@@ -71,66 +71,122 @@ API requires an HMAC-SHA1 token computed from:
 - **WA_MD5_CLASSES**: Base64(MD5(classes.dex)) - changes per version
 - **WA_KEY**: 80-byte HMAC key - extracted from native library
 
+```
 Token = Base64(HMAC-SHA1(KEY, SIGNATURE + MD5_CLASSES + phone))
-
-**Current Status**: Fully configured for WhatsApp version 2.26.4.71.
-All registration constants (SIGNATURE, MD5_CLASSES, KEY) are in place.
-
-### Updating to a New Version
-
-When WhatsApp releases a new version, both MD5_CLASSES and KEY must be updated.
-Use the included extraction tool:
-
-```sh
-# Extract key and MD5_CLASSES from new APK
-./tools/extract_key.py /path/to/WhatsApp.apk
-
-# Output (copy to src/register.c):
-#define WA_MD5_CLASSES "PNuIlAsWtqBNw7eLEYwWUA=="
-#define WA_KEY "dCLnrTWF4vk36Bx1325H8RpxHSnFiW+3Yg6qGL4b/FY+..."
-
-# Also update WA_VERSION in src/register.c, then rebuild
-make clean && make
 ```
 
-### Key Extraction Tool
+### Extracting the HMAC Key
 
-The `tools/extract_key.py` script automates HMAC key extraction from WhatsApp APKs:
+The 80-byte HMAC key is stored inside WhatsApp's native library in a proprietary
+compressed format (Facebook's Openbox/ANS compression). There are two methods
+to extract it:
+
+#### Method 1: Frida Runtime Extraction (Recommended)
+
+This method captures the key at runtime when WhatsApp uses it. Works on both
+rooted devices and non-rooted devices (with APK patching).
+
+**Option A: Rooted Device/Emulator**
 
 ```sh
-# Basic usage
+# 1. Install Frida tools
+pip install frida-tools
+
+# 2. Download and start Frida server on device
+FRIDA_VERSION=$(frida --version)
+wget "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-arm64.xz"
+xz -d frida-server-*.xz && mv frida-server-* frida-server
+
+adb root
+adb push frida-server /data/local/tmp/
+adb shell "chmod 755 /data/local/tmp/frida-server"
+adb shell "/data/local/tmp/frida-server &"
+
+# 3. Install WhatsApp and run extraction
+adb install WhatsApp.apk
+frida -U -f com.whatsapp -l tools/frida_extract_key.js --no-pause
+
+# 4. In WhatsApp: Enter phone number, tap Next
+# The 80-byte HMAC key will be displayed
+```
+
+**Option B: Non-Rooted Device (APK Patching)**
+
+Inject Frida Gadget into the APK to run without root:
+
+```sh
+# 1. Install requirements
+pip install frida-tools
+sudo apt install apktool zipalign apksigner
+
+# 2. Patch the APK (automated script)
+./tools/patch_apk.sh /path/to/WhatsApp.apk arm64-v8a
+
+# Output: WhatsApp_patched.apk
+
+# 3. Install patched APK
+adb uninstall com.whatsapp  # Remove existing installation
+adb install WhatsApp_patched.apk
+
+# 4. Start WhatsApp on device (will wait for Frida to connect)
+
+# 5. Connect and extract key
+frida -U Gadget -l tools/frida_extract_key.js
+
+# 6. In WhatsApp: Enter phone number, tap Next
+# Key will be captured!
+```
+
+The patching script:
+- Downloads Frida Gadget for your architecture
+- Decompiles the APK with apktool
+- Injects the gadget loader into the main activity
+- Rebuilds and signs the APK
+
+#### Method 2: Static Analysis (Fallback)
+
+If runtime extraction isn't possible, try static analysis:
+
+```sh
+# Extract key candidates from APK
 ./tools/extract_key.py WhatsApp.apk
 
-# Show all candidate keys (if automatic selection fails)
+# Show all candidates if the first one fails
 ./tools/extract_key.py WhatsApp.apk --all
-
-# Extract key at specific offset (for manual verification)
-./tools/extract_key.py WhatsApp.apk --offset 0x4bc4e0
-
-# Verbose output with hex dump
-./tools/extract_key.py WhatsApp.apk -v
 ```
 
-The tool:
-1. Calculates MD5_CLASSES from classes.dex
-2. Parses libs.so ELF to find SuperPack archive
-3. Decompresses XZ streams
-4. Searches for 80-byte high-entropy sequences near "hmac sha-1" string
+**Note**: Static analysis may not find the correct key because the key is stored
+in an Openbox-compressed section that requires WhatsApp's native decompressor.
+If registration fails with "bad_token", use Frida runtime extraction instead.
 
-If registration fails with "bad_token", try other candidates using `--all`.
+### Updating src/register.c
 
-### Alternative: Frida Runtime Extraction
+Once you have the key:
 
-If static analysis fails, use Frida on a rooted Android device:
+```sh
+# 1. Calculate MD5_CLASSES
+unzip -p WhatsApp.apk classes.dex | md5sum | xxd -r -p | base64
 
-1. Install WhatsApp on rooted device/emulator
-2. Hook `mbedtls_md_hmac_starts` with key length 80
-3. Trigger registration to capture the key
+# 2. Update src/register.c with:
+#define WA_MD5_CLASSES "YOUR_MD5_CLASSES_HERE"
+#define WA_KEY "YOUR_80_BYTE_KEY_BASE64_HERE"
+#define WA_VERSION "2.xx.x.xx"  # From APK
 
-### Alternative: Import Existing Account
+# 3. Rebuild
+make clean && make
 
-If you have an existing WhatsApp account on another device, you may be able to
-import the credentials by extracting them from that device.
+# 4. Test (should not return "bad_token")
+./wa-mini register +1234567890
+```
+
+### Troubleshooting Registration
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `bad_token` | Wrong HMAC key | Extract key using Frida runtime method |
+| `bad_param` | Malformed request | Check URL encoding of parameters |
+| `old_version` | WhatsApp version outdated | Update to newer APK and re-extract key |
+| `blocked` | Too many attempts | Wait and try again later |
 
 ## CLI Commands
 

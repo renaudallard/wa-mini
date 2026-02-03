@@ -143,19 +143,59 @@ The token is computed from three components:
 .PP
 .B WA_KEY
 \- 80-byte HMAC key \- extracted from native library
+.SS Key Extraction
+The 80-byte HMAC key is stored in WhatsApp's native library using Facebook's
+proprietary Openbox compression. The recommended extraction method uses Frida
+to capture the key at runtime.
 .PP
-All three components are configured for WhatsApp version 2.26.4.71.
-.PP
-For new WhatsApp versions, use the included extraction tool:
+.B Method 1: Frida with Rooted Device
 .PP
 .nf
-./tools/extract_key.py /path/to/WhatsApp.apk
+# Start Frida server on rooted device
+adb shell "/data/local/tmp/frida-server &"
+
+# Run extraction
+frida -U -f com.whatsapp -l tools/frida_extract_key.js --no-pause
+
+# Enter phone number in WhatsApp and tap Next
+# Key will be displayed
 .fi
 .PP
-The tool extracts both MD5_CLASSES and KEY from the APK.
-Update the values in
-.I src/register.c
-and rebuild.
+.B Method 2: Frida with APK Patching (No Root)
+.PP
+Inject Frida Gadget into the APK to run without root:
+.PP
+.nf
+# Patch the APK
+./tools/patch_apk.sh WhatsApp.apk arm64-v8a
+
+# Install patched APK
+adb install WhatsApp_patched.apk
+
+# Connect Frida (note: process name is "Gadget")
+frida -U Gadget -l tools/frida_extract_key.js
+
+# Enter phone number in WhatsApp and tap Next
+.fi
+.PP
+.B Method 3: Static Analysis (Fallback)
+.PP
+.nf
+./tools/extract_key.py WhatsApp.apk --all
+.fi
+.PP
+Static analysis may not find the correct key due to the proprietary compression.
+Use Frida runtime extraction if registration fails with "bad_token".
+.SS Updating src/register.c
+.PP
+.nf
+#define WA_MD5_CLASSES "YOUR_MD5_HERE"
+#define WA_KEY "YOUR_80_BYTE_KEY_HERE"
+#define WA_VERSION "2.xx.x.xx"
+.fi
+.PP
+Then rebuild:
+.B make clean && make
 .SH EXAMPLES
 .SS Register a new account
 .nf
