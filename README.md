@@ -181,14 +181,71 @@ Credentials are stored in `~/.wa-mini/accounts/<phone>.acc` (312 bytes):
 
 WhatsApp's `/v2/code` endpoint requires Android Keystore Attestation - an X.509
 certificate chain proving the request comes from a genuine Android device with
-the legitimate WhatsApp app. This attestation cannot be faked from non-Android
-clients because:
+the legitimate WhatsApp app.
 
-- Certificate chain is verified against Google's root certificates
-- Attestation proves keys were generated in hardware/TEE
-- Challenge-response binds attestation to the specific request
+#### Keystore Encryption vs Attestation
 
-See the research notes in `docs/attestation.md` for full technical details.
+There's an important distinction between two uses of Android Keystore:
+
+**1. Keystore Encryption (for local storage)**
+
+WhatsApp stores the Noise keypair encrypted with Android Keystore:
+- `client_static_keypair_enc` (format 0): AES-128-GCM with Keystore-managed key
+- `client_static_keypair_pwd_enc` (format 2): PBKDF2 + AES-OFB backup
+
+On x86 emulators without hardware TEE, this encryption is software-emulated.
+The AES key can be extracted from `/data/misc/keystore/user_0/<uid>_USRPKEY_*`
+at offset 0x2e (16 bytes). This is what `extract_credentials.py` does.
+
+**2. Keystore Attestation (for registration)**
+
+When registering, WhatsApp requests an attestation certificate chain:
+```
+Device → Keymaster HAL → Google Play Services → Google servers
+                                    ↓
+                          Signed certificate chain
+                          Root: Google Hardware Attestation Root CA
+```
+
+Even on x86 emulators with software-backed keys, attestation requires:
+- Google Play Services installed and running
+- Communication with Google's attestation servers
+- Google signing the certificate with their private keys
+
+#### Why Open-Source Google Services (microG) Won't Help
+
+Projects like microG can replace most Play Services functionality but **cannot**
+generate valid attestation certificates because:
+
+- Attestation certificates must chain to Google's root CA
+- Only Google has the private keys to sign these certificates
+- No amount of local software emulation can forge this signature
+
+#### What About x86 Emulators?
+
+Registration works on x86 Android emulators because:
+1. They have real Google Play Services installed
+2. Play Services contacts Google's servers for attestation
+3. Google issues "software-backed" attestation (lower security tier)
+4. WhatsApp accepts this level of attestation
+
+The emulator is not "emulating" attestation - it's getting real certificates
+from Google, just with a software (not hardware) security level.
+
+#### Investigation Findings (x86 Android VM)
+
+Testing on an Android-x86 VM with WhatsApp 2.26.4.71 confirmed:
+
+| Component | Status |
+|-----------|--------|
+| Google Play Services | Running (v26.04.34) |
+| SafetyNet service | Available and functional |
+| Keystore encryption | Software-emulated, extractable |
+| Keystore attestation | Works via Google's servers |
+| WhatsApp registration | Successful |
+
+The VM has full Google services running (`com.google.android.gms`,
+`com.google.process.gservices`, etc.) which handle attestation requests.
 
 ## CLI Commands
 

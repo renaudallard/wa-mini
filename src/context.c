@@ -464,6 +464,36 @@ static wa_error_t do_handshake(wa_ctx_t *ctx)
 
     WA_DEBUG("processed ServerHello, building ClientFinish");
 
+    /* Debug: show received server static vs stored */
+    if (ctx->handshake.has_server_static) {
+        WA_DEBUG("received server static:");
+        for (int i = 0; i < 32; i += 16) {
+            WA_DEBUG("  %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+                ctx->handshake.server_static_pub[i], ctx->handshake.server_static_pub[i+1],
+                ctx->handshake.server_static_pub[i+2], ctx->handshake.server_static_pub[i+3],
+                ctx->handshake.server_static_pub[i+4], ctx->handshake.server_static_pub[i+5],
+                ctx->handshake.server_static_pub[i+6], ctx->handshake.server_static_pub[i+7],
+                ctx->handshake.server_static_pub[i+8], ctx->handshake.server_static_pub[i+9],
+                ctx->handshake.server_static_pub[i+10], ctx->handshake.server_static_pub[i+11],
+                ctx->handshake.server_static_pub[i+12], ctx->handshake.server_static_pub[i+13],
+                ctx->handshake.server_static_pub[i+14], ctx->handshake.server_static_pub[i+15]);
+        }
+        WA_DEBUG("stored server static:");
+        for (int i = 0; i < 32; i += 16) {
+            WA_DEBUG("  %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+                ctx->current_account->server_static_pub[i], ctx->current_account->server_static_pub[i+1],
+                ctx->current_account->server_static_pub[i+2], ctx->current_account->server_static_pub[i+3],
+                ctx->current_account->server_static_pub[i+4], ctx->current_account->server_static_pub[i+5],
+                ctx->current_account->server_static_pub[i+6], ctx->current_account->server_static_pub[i+7],
+                ctx->current_account->server_static_pub[i+8], ctx->current_account->server_static_pub[i+9],
+                ctx->current_account->server_static_pub[i+10], ctx->current_account->server_static_pub[i+11],
+                ctx->current_account->server_static_pub[i+12], ctx->current_account->server_static_pub[i+13],
+                ctx->current_account->server_static_pub[i+14], ctx->current_account->server_static_pub[i+15]);
+        }
+        int match = memcmp(ctx->handshake.server_static_pub, ctx->current_account->server_static_pub, 32) == 0;
+        WA_DEBUG("server static match: %s", match ? "YES" : "NO");
+    }
+
     /*
      * Step 3: Build and send ClientFinish (-> s, se)
      */
