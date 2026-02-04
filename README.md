@@ -1,11 +1,20 @@
 # wa-mini
 
-**Minimal WhatsApp Primary Device Service**
+**Minimal WhatsApp Primary Device Service** (Work in Progress)
 
 A lightweight C service that acts as a WhatsApp primary device, allowing companion
 devices (like mautrix-whatsapp) to link to it without a physical phone running.
 
-## Features
+> **⚠️ Current Status: Not Working**
+>
+> Authentication with WhatsApp servers fails after the Noise handshake completes.
+> The server closes the connection after receiving ClientFinish, likely due to
+> missing or incorrect fields in the ClientPayload. This is under investigation.
+>
+> Additionally, key injection before registration does not work reliably -
+> WhatsApp validates and regenerates keys during registration.
+
+## Features (Planned)
 
 - **Primary Device Mode** - Import credentials from Android to run as primary device
 - **Companion Linking** - Generate link codes for WhatsApp Web/Desktop/bridges
@@ -66,14 +75,17 @@ wa-mini link +15551234567
 wa-mini daemon
 ```
 
-## Credential Extraction
+## Credential Setup
 
-Direct registration is not supported because WhatsApp requires Android Keystore
-Attestation since 2025. Instead, you must:
+Direct registration from wa-mini is not supported because WhatsApp requires
+Android Keystore Attestation. You must register on a real Android device first,
+then extract the credentials.
 
-1. Register on a rooted Android device (physical or emulator)
-2. Extract the credentials from the device
-3. Import them into wa-mini
+### Extract Credentials from Existing Registration
+
+```sh
+./tools/extract_credentials.py --adb --phone +15551234567
+```
 
 ### Prerequisites
 
@@ -88,12 +100,21 @@ Without root, extraction is impossible - there is no workaround. If you don't
 have a rooted device, you can use an Android-x86 emulator (e.g., in a VM) which
 typically has root access by default.
 
-### Step 1: Register on Android
+### Key Injection (Experimental - Does Not Work Reliably)
 
-Install WhatsApp on your rooted Android device and complete the normal
-registration process (SMS verification).
+An experimental tool `inject_credentials.py` exists to pre-inject keys before
+WhatsApp registration. The theory was that WhatsApp would use the injected
+Noise keypair while handling attestation itself.
 
-### Step 2: Extract Credentials
+**This approach does not work reliably** because:
+- WhatsApp validates and often regenerates keys during registration
+- Even when the Noise keypair is preserved, Signal protocol keys are regenerated
+- Registration often fails in a loop after SMS verification with injected keys
+- The signed prekey signature generation is complex (XEdDSA) and hard to replicate
+
+The tool remains in `tools/inject_credentials.py` for research purposes only.
+
+### Manual Credential Extraction
 
 Use the provided extraction tool:
 
@@ -242,10 +263,35 @@ Testing on an Android-x86 VM with WhatsApp 2.26.4.71 confirmed:
 | SafetyNet service | Available and functional |
 | Keystore encryption | Software-emulated, extractable |
 | Keystore attestation | Works via Google's servers |
-| WhatsApp registration | Successful |
+| WhatsApp registration | Successful (when not injecting keys) |
 
 The VM has full Google services running (`com.google.android.gms`,
 `com.google.process.gservices`, etc.) which handle attestation requests.
+
+#### Key Injection Experiments (Failed)
+
+We attempted to inject pre-generated keys into WhatsApp before registration,
+hoping WhatsApp would use our keys while handling attestation itself:
+
+**Approach 1: Inject Noise + Signal keys**
+- Created `keystore.xml` with encrypted Noise keypair (format 2)
+- Created `axolotl.db` with identity key, signed prekey, and prekeys
+- Result: WhatsApp used our Noise keypair but regenerated Signal keys
+- Registration failed in a loop ("finishing setup" → back to name entry)
+
+**Approach 2: Inject Noise keypair only**
+- Only injected `keystore.xml` with Noise keypair
+- Let WhatsApp generate its own Signal keys
+- Result: WhatsApp regenerated the Noise keypair entirely, ignoring our injection
+
+**Approach 3: Inject with server_static_public**
+- Added `server_static_public` to make WhatsApp think registration completed
+- Result: Same failure - registration loop
+
+**Conclusion:** WhatsApp validates and regenerates keys during registration.
+The exact validation mechanism is unknown, but key injection before registration
+does not work reliably. The only working method is extracting credentials from
+an already-completed registration.
 
 ## CLI Commands
 
