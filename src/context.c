@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sodium.h>
+#include <openssl/evp.h>
 
 #include "wa-mini.h"
 #include "noise.h"
@@ -472,18 +473,38 @@ static wa_error_t do_handshake(wa_ctx_t *ctx)
     sodium_memzero(&auth, sizeof(auth));
     auth.username = phone_to_int64(ctx->current_account->phone);
     auth.has_passive = 1;
-    auth.passive = 0;
+    auth.passive = 0;  /* Primary device mode */
     auth.has_short_connect = 1;
     auth.short_connect = 0;
     auth.platform_type = 0;  /* Android */
-    auth.os_version = "15";
-    auth.manufacturer = "Google";
-    auth.device_model = "Pixel 8";
-    auth.os_build_number = "AP4A.250205.002";
+    auth.os_version = "9";
+    auth.manufacturer = "VMware, Inc.";
+    auth.device_model = "VMware Virtual Platform";
+    auth.os_build_number = "PI";
 
     /* Parse and set app version */
     auth.has_app_version = 1;
     parse_version(ctx->whatsapp_version, &auth.app_version);
+
+    /* Connection type: 1 = WIFI_UNKNOWN */
+    auth.has_connect_type = 1;
+    auth.connect_type = 1;
+
+    /* Connection reason: 1 = USER_ACTIVATED */
+    auth.has_connect_reason = 1;
+    auth.connect_reason = 1;
+
+    /* OC and LC flags */
+    auth.has_oc = 1;
+    auth.oc = 0;
+    auth.has_lc = 1;
+    auth.lc = 0;
+
+    /* Device capability metrics */
+    auth.has_year_class = 1;
+    auth.year_class = 2018;    /* Performance year for Android 9 device */
+    auth.has_mem_class = 1;
+    auth.mem_class = 256;      /* Standard memory class */
 
     /* Populate device pairing data (Signal keys) */
     auth.has_device_pairing = 1;
@@ -506,11 +527,32 @@ static wa_error_t do_handshake(wa_ctx_t *ctx)
     /* Signed prekey signature */
     memcpy(auth.device_pairing.signed_prekey_sig, ctx->current_account->signed_prekey_sig, 64);
 
+    /* Build hash - MD5 of WhatsApp version string */
+    auth.device_pairing.has_build_hash = 1;
+    {
+        EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+        unsigned int md_len;
+        EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
+        EVP_DigestUpdate(mdctx, ctx->whatsapp_version, strlen(ctx->whatsapp_version));
+        EVP_DigestFinal_ex(mdctx, auth.device_pairing.build_hash, &md_len);
+        EVP_MD_CTX_free(mdctx);
+    }
+
     uint8_t client_payload[2048];
     size_t client_payload_len;
 
     if (proto_encode_client_payload(&auth, client_payload, &client_payload_len) != 0) {
         return WA_ERR_PROTOCOL;
+    }
+
+    /* Debug: print ClientPayload bytes */
+    WA_DEBUG("ClientPayload (%zu bytes):", client_payload_len);
+    for (size_t i = 0; i < client_payload_len && i < 200; i += 16) {
+        char hex[50] = {0};
+        for (size_t j = 0; j < 16 && i + j < client_payload_len; j++) {
+            sprintf(hex + j * 3, "%02x ", client_payload[i + j]);
+        }
+        WA_DEBUG("  %04zx: %s", i, hex);
     }
 
     /* Noise encrypt the static key and payload */

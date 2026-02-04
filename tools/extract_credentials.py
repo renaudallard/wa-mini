@@ -19,6 +19,7 @@ Usage:
 import argparse
 import base64
 import binascii
+import json
 import os
 import re
 import sqlite3
@@ -30,6 +31,10 @@ import time
 import xml.etree.ElementTree as ET
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
 
 
 def generate_noise_keypair():
@@ -38,6 +43,122 @@ def generate_noise_keypair():
     private_bytes = private_key.private_bytes_raw()
     public_bytes = private_key.public_key().public_bytes_raw()
     return private_bytes, public_bytes
+
+
+# XOR-encoded identifier used for Noise keypair encryption
+# Decoded from WhatsApp's 0fT.smali: "A\u0004\u001d@\u0011\u0018V\u0091\u0002\u0090\u0088\u009f\u009eT(3{;ES"
+_NOISE_KEY_IDENTIFIER_ENCODED = "A\u0004\u001d@\u0011\u0018V\u0091\u0002\u0090\u0088\u009f\u009eT(3{;ES"
+
+
+def _xor_decode(encoded, key=0x12):
+    """XOR decode a string with the given key."""
+    return ''.join(chr(ord(c) ^ key) for c in encoded)
+
+
+def _b64decode_nopad(s):
+    """Decode base64 with automatic padding."""
+    padding = 4 - (len(s) % 4)
+    if padding != 4:
+        s += '=' * padding
+    return base64.b64decode(s)
+
+
+def decrypt_noise_keypair_pwd(encrypted_json):
+    """
+    Decrypt WhatsApp's password-encrypted Noise keypair.
+
+    The encrypted data is stored as a JSON array in keystore.xml:
+    [format, ciphertext_b64, iv_b64, salt_b64, randomness]
+
+    Format 2 uses:
+    - PBKDF2WithHmacSHA1And8BIT (iterations=16, keylength=128 bits)
+    - AES/OFB/NoPadding
+    - Password = XOR-decoded identifier + randomness (UTF-8 encoded)
+
+    Returns (private_key, public_key) tuple or (None, None) on failure.
+    """
+    try:
+        data = json.loads(encrypted_json)
+
+        if len(data) < 5:
+            print("[-] Invalid encrypted keypair format (not enough fields)")
+            return None, None
+
+        format_type = data[0]
+        if format_type != 2:
+            print(f"[-] Unsupported encryption format: {format_type} (expected 2)")
+            return None, None
+
+        # Parse fields (order: format, ciphertext, iv, salt, randomness)
+        ciphertext = _b64decode_nopad(data[1])
+        iv = _b64decode_nopad(data[2])
+        salt = _b64decode_nopad(data[3])
+        randomness = data[4]  # Used as-is (not base64)
+
+        if len(ciphertext) != 64:
+            print(f"[-] Unexpected ciphertext length: {len(ciphertext)} (expected 64)")
+            return None, None
+
+        if len(iv) != 16:
+            print(f"[-] Unexpected IV length: {len(iv)} (expected 16)")
+            return None, None
+
+        if len(salt) != 4:
+            print(f"[-] Unexpected salt length: {len(salt)} (expected 4)")
+            return None, None
+
+        # Decode the identifier
+        identifier = _xor_decode(_NOISE_KEY_IDENTIFIER_ENCODED)
+
+        # Build password: identifier + randomness (UTF-8 encoded)
+        password = identifier + randomness
+        password_bytes = password.encode('utf-8')
+
+        # Derive key using PBKDF2
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA1(),
+            length=16,  # 128 bits
+            salt=salt,
+            iterations=16,
+            backend=default_backend()
+        )
+        key = kdf.derive(password_bytes)
+
+        # Decrypt using AES/OFB/NoPadding
+        cipher = Cipher(algorithms.AES(key), modes.OFB(iv), backend=default_backend())
+        decryptor = cipher.decryptor()
+        decrypted = decryptor.update(ciphertext) + decryptor.finalize()
+
+        if len(decrypted) != 64:
+            print(f"[-] Unexpected decrypted length: {len(decrypted)}")
+            return None, None
+
+        # First 32 bytes = private key, last 32 bytes = public key
+        noise_private = decrypted[:32]
+        noise_public = decrypted[32:]
+
+        # Verify the keypair
+        try:
+            priv_key = X25519PrivateKey.from_private_bytes(noise_private)
+            computed_pub = priv_key.public_key().public_bytes_raw()
+            if computed_pub != noise_public:
+                print("[-] Decrypted Noise keypair verification failed")
+                print(f"    Computed public: {computed_pub.hex()}")
+                print(f"    Stored public:   {noise_public.hex()}")
+                return None, None
+        except Exception as e:
+            print(f"[-] Keypair verification error: {e}")
+            return None, None
+
+        print("[+] Successfully decrypted Noise keypair (format 2)")
+        return noise_private, noise_public
+
+    except json.JSONDecodeError as e:
+        print(f"[-] Failed to parse encrypted keypair JSON: {e}")
+        return None, None
+    except Exception as e:
+        print(f"[-] Failed to decrypt Noise keypair: {e}")
+        return None, None
 
 
 def parse_protobuf_signed_prekey(data):
@@ -307,6 +428,8 @@ def parse_keystore_xml(xml_path):
     with open(xml_path, 'r') as f:
         content = f.read()
 
+    pwd_enc_value = None  # Store password-encrypted keypair for later
+
     # Try XML parsing first
     try:
         root = ET.fromstring(content)
@@ -314,8 +437,17 @@ def parse_keystore_xml(xml_path):
             name = item.get("name", "")
             value = item.text or ""
 
-            if "client_static_keypair" in name and "pwd_enc" not in name:
-                # Base64 encoded keypair (64 bytes: 32 private + 32 public)
+            if name == "client_static_keypair_pwd_enc":
+                # Password-encrypted keypair (format 2) - save for decryption
+                pwd_enc_value = value
+                print("[*] Found password-encrypted Noise keypair")
+
+            elif name == "client_static_keypair_enc" and "pwd" not in name:
+                # Android Keystore encrypted (format 0) - can't decrypt without device
+                print("[*] Found Android Keystore encrypted keypair (cannot decrypt)")
+
+            elif "client_static_keypair" in name and "enc" not in name:
+                # Plaintext base64 encoded keypair (64 bytes: 32 private + 32 public)
                 try:
                     keypair = base64.b64decode(value)
                     if len(keypair) == 64:
@@ -342,25 +474,40 @@ def parse_keystore_xml(xml_path):
         # Fallback to regex
         pass
 
-    # Also try regex for encoded values
-    patterns = [
-        (r'client_static_keypair[^>]*>([A-Za-z0-9+/=]+)<', "noise_keypair"),
-        (r'server_static[^>]*>([A-Za-z0-9+/=]+)<', "server_public"),
-    ]
+    # Try to decrypt password-encrypted keypair if we don't have plaintext keys
+    if result["noise_private"] is None and pwd_enc_value:
+        print("[*] Attempting to decrypt password-encrypted Noise keypair...")
+        noise_priv, noise_pub = decrypt_noise_keypair_pwd(pwd_enc_value)
+        if noise_priv and noise_pub:
+            result["noise_private"] = noise_priv
+            result["noise_public"] = noise_pub
 
-    for pattern, key in patterns:
-        match = re.search(pattern, content)
-        if match and result.get(key) is None:
+    # Also try regex for encoded values (fallback)
+    if result["noise_private"] is None:
+        patterns = [
+            (r'client_static_keypair"[^>]*>([A-Za-z0-9+/=]+)<', "noise_keypair"),
+        ]
+        for pattern, key in patterns:
+            match = re.search(pattern, content)
+            if match:
+                try:
+                    b64_value = match.group(1)
+                    padded = b64_value + '=' * (-len(b64_value) % 4)
+                    data = base64.b64decode(padded)
+                    if len(data) == 64:
+                        result["noise_private"] = data[:32]
+                        result["noise_public"] = data[32:]
+                        print("[+] Found Noise keypair (regex fallback)")
+                except Exception:
+                    pass
+
+    if result["server_public"] is None:
+        match = re.search(r'server_static[^>]*>([A-Za-z0-9+/=]+)<', content)
+        if match:
             try:
-                # Add base64 padding if needed
                 b64_value = match.group(1)
                 padded = b64_value + '=' * (-len(b64_value) % 4)
-                data = base64.b64decode(padded)
-                if key == "noise_keypair" and len(data) == 64:
-                    result["noise_private"] = data[:32]
-                    result["noise_public"] = data[32:]
-                elif key == "server_public":
-                    result["server_public"] = data
+                result["server_public"] = base64.b64decode(padded)
             except Exception:
                 pass
 
@@ -527,12 +674,20 @@ def process_files(axolotl_path, keystore_path, phone, output_path):
     if not phone and keystore_data.get("phone"):
         phone = keystore_data["phone"]
 
-    # Always generate fresh Noise keypair
-    # WhatsApp servers accept new Noise keys for existing accounts, and the
-    # encrypted Noise keys in newer WhatsApp versions can't be decrypted anyway
-    print("\n[*] Generating fresh Noise keypair...")
-    noise_priv, noise_pub = generate_noise_keypair()
-    print(f"[+] Generated Noise keypair: {noise_pub[:8].hex()}...")
+    # Use decrypted Noise keys if available, otherwise generate fresh ones
+    noise_priv = keystore_data.get("noise_private")
+    noise_pub = keystore_data.get("noise_public")
+
+    if noise_priv and noise_pub:
+        print(f"\n[+] Using decrypted Noise keypair: {noise_pub[:8].hex()}...")
+    else:
+        # Fallback: generate fresh Noise keypair
+        # Note: Fresh keys may not work with existing registrations!
+        print("\n[!] Could not decrypt Noise keypair, generating fresh one...")
+        print("[!] Warning: Fresh Noise keys may cause authentication failures")
+        print("[!]          if the account was registered with different keys.")
+        noise_priv, noise_pub = generate_noise_keypair()
+        print(f"[+] Generated Noise keypair: {noise_pub[:8].hex()}...")
 
     # Summary
     print("\n=== Extracted Credentials ===")

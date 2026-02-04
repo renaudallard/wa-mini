@@ -284,6 +284,11 @@ static int wa_socket_read(wa_socket_t *sock, uint8_t *data, size_t len, int time
         }
 
         if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            WA_DEBUG("socket error: revents=0x%x (POLLERR=%d POLLHUP=%d POLLNVAL=%d)",
+                     pfd.revents,
+                     (pfd.revents & POLLERR) != 0,
+                     (pfd.revents & POLLHUP) != 0,
+                     (pfd.revents & POLLNVAL) != 0);
             sock->connected = 0;
             return -1;
         }
@@ -297,6 +302,7 @@ static int wa_socket_read(wa_socket_t *sock, uint8_t *data, size_t len, int time
 
         if (n == 0) {
             /* EOF */
+            WA_DEBUG("socket EOF, server closed connection (total read=%zu)", total);
             sock->connected = 0;
             return total > 0 ? (int)total : -1;
         }

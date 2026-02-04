@@ -96,6 +96,8 @@ typedef struct {
     uint8_t signed_prekey_id[4];    /* Big-endian 4 bytes */
     uint8_t signed_prekey_pub[32];  /* Signed prekey public */
     uint8_t signed_prekey_sig[64];  /* Signed prekey signature */
+    uint8_t build_hash[16];         /* MD5 of WhatsApp version string */
+    int has_build_hash;
 } proto_device_pairing_t;
 
 /* Client payload for authentication */
@@ -113,6 +115,25 @@ typedef struct {
 
     int has_short_connect;
     int short_connect;
+
+    /* Connection info */
+    int has_connect_type;
+    uint32_t connect_type;          /* 0=CELLULAR_UNKNOWN, 1=WIFI_UNKNOWN, etc */
+
+    int has_connect_reason;
+    uint32_t connect_reason;        /* 0=PUSH, 1=USER_ACTIVATED, etc */
+
+    int has_oc;
+    int oc;
+
+    int has_lc;
+    uint32_t lc;
+
+    int has_year_class;
+    uint32_t year_class;            /* Device performance year classification */
+
+    int has_mem_class;
+    uint32_t mem_class;             /* Device memory class in MB */
 
     /* Device props */
     char *os_version;

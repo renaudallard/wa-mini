@@ -140,14 +140,20 @@ WhatsApp stores credentials in SQLite (`axolotl.db`):
 | `prekeys` | One-time prekeys pool |
 
 The `keystore.xml` file contains:
-- `client_static_keypair_pwd_enc` - Encrypted Noise keypair (newer versions)
+- `client_static_keypair_pwd_enc` - Password-encrypted Noise keypair (format 2)
+- `client_static_keypair_enc` - Android Keystore encrypted Noise keypair (format 0)
 - `server_static_public` - WhatsApp server's Noise public key (plaintext)
 
-**Note:** In newer WhatsApp versions, the Noise keypair is encrypted with
-device-specific keys and cannot be extracted. The extraction tool automatically
-generates a fresh Noise keypair for each extraction - WhatsApp servers accept
-new Noise keys for existing accounts. The `server_static_public` key is still
-extracted from `keystore.xml` if available.
+**Noise Key Encryption:** WhatsApp stores the Noise keypair in two formats:
+- **Format 0** (`client_static_keypair_enc`): Encrypted with Android Keystore -
+  cannot be decrypted without the device's hardware-backed keys.
+- **Format 2** (`client_static_keypair_pwd_enc`): Password-based encryption using
+  PBKDF2-SHA1 and AES-OFB. The extraction tool can decrypt this format using a
+  reverse-engineered identifier from WhatsApp's code.
+
+The extraction tool automatically attempts to decrypt the password-encrypted
+keypair. Using the original Noise keys is important for successful authentication
+with WhatsApp servers.
 
 ### wa-mini Account File Format
 

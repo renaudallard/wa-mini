@@ -49,7 +49,13 @@
 #define PAYLOAD_PUSH_NAME      7   /* string */
 #define PAYLOAD_SESSION_ID     9   /* int32 */
 #define PAYLOAD_SHORT_CONNECT  10  /* bool */
+#define PAYLOAD_CONNECT_TYPE   12  /* enum - connection type */
+#define PAYLOAD_CONNECT_REASON 13  /* enum - connection reason */
 #define PAYLOAD_DEVICE_PAIRING 19  /* message - contains keys */
+#define PAYLOAD_OC             23  /* bool */
+#define PAYLOAD_LC             24  /* int32 */
+#define PAYLOAD_YEAR_CLASS     36  /* int32 - device year class */
+#define PAYLOAD_MEM_CLASS      37  /* int32 - device memory class */
 
 /* DevicePairingData field numbers */
 #define PAIRING_REGID        1  /* bytes - registration ID */
@@ -424,6 +430,11 @@ static int encode_device_pairing(const proto_device_pairing_t *dp, uint8_t *out,
     /* Field 6: signed prekey signature (bytes - 64 bytes) */
     pos += write_bytes(out + pos, PAIRING_SKEY_SIG, dp->signed_prekey_sig, 64);
 
+    /* Field 7: build_hash (bytes - 16 bytes MD5 of version) */
+    if (dp->has_build_hash) {
+        pos += write_bytes(out + pos, PAIRING_BUILD_HASH, dp->build_hash, 16);
+    }
+
     *out_len = (size_t)pos;
     return 0;
 }
@@ -465,11 +476,41 @@ int proto_encode_client_payload(const proto_client_payload_t *msg, uint8_t *out,
         pos += write_bool(out + pos, PAYLOAD_SHORT_CONNECT, msg->short_connect);
     }
 
+    /* Field 12: connect_type (enum) */
+    if (msg->has_connect_type) {
+        pos += write_uint32(out + pos, PAYLOAD_CONNECT_TYPE, msg->connect_type);
+    }
+
+    /* Field 13: connect_reason (enum) */
+    if (msg->has_connect_reason) {
+        pos += write_uint32(out + pos, PAYLOAD_CONNECT_REASON, msg->connect_reason);
+    }
+
     /* Field 19: device_pairing (nested message - Signal keys) */
     if (msg->has_device_pairing) {
         if (encode_device_pairing(&msg->device_pairing, nested, &nested_len) == 0) {
             pos += write_bytes(out + pos, PAYLOAD_DEVICE_PAIRING, nested, nested_len);
         }
+    }
+
+    /* Field 23: oc (bool) */
+    if (msg->has_oc) {
+        pos += write_bool(out + pos, PAYLOAD_OC, msg->oc);
+    }
+
+    /* Field 24: lc (int32) */
+    if (msg->has_lc) {
+        pos += write_uint32(out + pos, PAYLOAD_LC, msg->lc);
+    }
+
+    /* Field 36: year_class (int32) */
+    if (msg->has_year_class) {
+        pos += write_uint32(out + pos, PAYLOAD_YEAR_CLASS, msg->year_class);
+    }
+
+    /* Field 37: mem_class (int32) */
+    if (msg->has_mem_class) {
+        pos += write_uint32(out + pos, PAYLOAD_MEM_CLASS, msg->mem_class);
     }
 
     *out_len = (size_t)pos;
